@@ -2,6 +2,7 @@
 name = "nakamoto-electrs"
 version = "0.0.1"
 edition = "2024"
+default-run = "nakamoto-electrs"
 
 [dependencies]
 anyhow = "1.0"
