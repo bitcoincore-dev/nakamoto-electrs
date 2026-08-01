@@ -1,0 +1,8 @@
+[build]
+rustc-wrapper = "sccache"
+
+[profile.dev]
+incremental = false
+
+[profile.release]
+incremental = false
