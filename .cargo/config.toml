@@ -1,6 +1,8 @@
-[env]
-# Forces RocksDB to use the system library if available
-ROCKSDB_LIB_DIR = "/usr/local/lib"
+#[env]
+## Forces RocksDB to use the system library if available
+# ln -s $(brew --prefix rocksdb) ./rocksdb
+# ln -s /opt/homebrew/Cellar/rocksdb/11.1.2 ./rocksdb
+ROCKSDB_LIB_DIR = "./rocksdb"
 
 [build]
 rustc-wrapper = "sccache"
