@@ -8,6 +8,7 @@ default-run = "nakamoto-electrs"
 anyhow = "1.0"
 bitcoin = "0.29.2"
 crossbeam-channel = "0.5"
+clap = { version = "4.5", features = ["derive"] }
 electrs = "0.10.10"
 nakamoto-chain = "0.4"
 nakamoto-client = "0.4"
