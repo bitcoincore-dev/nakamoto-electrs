@@ -39,6 +39,14 @@ struct Cli {
     #[arg(long)]
     testnet: bool,
 
+    /// Use the bitcoin signet network.
+    #[arg(long)]
+    signet: bool,
+
+    /// Use a custom signet challenge.
+    #[arg(long)]
+    signetchallenge: Option<String>,
+
     /// Only connect to IPv4 addresses.
     #[arg(short = '4', long)]
     ipv4: bool,
@@ -446,7 +454,9 @@ pub fn run() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    let network = if cli.testnet {
+    let network = if cli.signet || cli.signetchallenge.is_some() {
+        Network::Signet
+    } else if cli.testnet {
         Network::Testnet
     } else {
         Network::Bitcoin
@@ -478,6 +488,10 @@ pub fn run() -> Result<()> {
     };
     config.domains = domains;
     config.root = cli.root.unwrap_or_else(|| PathBuf::from(".nakamoto-electrs"));
+
+    if let Some(challenge) = cli.signetchallenge.as_deref() {
+        info!(target: "node", challenge, "custom signet challenge provided");
+    }
 
     let client = Client::<NodeReactor>::new().context("failed to create Nakamoto client")?;
     let handle = client.handle();
