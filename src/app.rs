@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use clap::{Parser, ValueEnum};
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::{Address, Block, BlockHash, Network, OutPoint, Script, Txid};
 use crossbeam_channel::{select, Receiver};
@@ -14,10 +15,39 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
-use tracing::{debug, error, info, warn, Level};
+use tracing::{debug, error, info, warn};
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::FmtSubscriber;
 
 type NodeReactor = Reactor<TcpStream>;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+struct Cli {
+    #[arg(long, value_enum, default_value_t = LogLevel::Info)]
+    logging: LogLevel,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<LogLevel> for LevelFilter {
+    fn from(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Error => LevelFilter::ERROR,
+            LogLevel::Warn => LevelFilter::WARN,
+            LogLevel::Info => LevelFilter::INFO,
+            LogLevel::Debug => LevelFilter::DEBUG,
+            LogLevel::Trace => LevelFilter::TRACE,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 struct UtxoView {
@@ -386,8 +416,9 @@ impl ChainState {
 }
 
 pub fn run() -> Result<()> {
+    let cli = Cli::parse();
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(cli.logging)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
