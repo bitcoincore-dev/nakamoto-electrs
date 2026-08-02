@@ -244,9 +244,9 @@ impl<Id: PeerId> nakamoto_net::Reactor<Id> for Reactor<net::TcpStream, Id> {
                                 }
                                 popol::Waker::reset(ev.source).ok();
 
-                                // Nb. This assert has triggered once, but I wasn't available
-                                // to reproduce it.
-                                debug_assert!(!commands.is_empty());
+                                if commands.is_empty() {
+                                    continue;
+                                }
 
                                 for cmd in commands.try_iter() {
                                     service.command_received(cmd);
