@@ -144,7 +144,17 @@ struct ChainState {
 
 impl Default for ChainState {
     fn default() -> Self {
-        Self::new(Network::Testnet)
+        Self {
+            network: Network::Testnet,
+            tip: None,
+            blocks: HashMap::new(),
+            block_deltas: HashMap::new(),
+            txs: HashMap::new(),
+            utxos: HashMap::new(),
+            addresses: HashMap::new(),
+            next_height: 0,
+            pending: BTreeMap::new(),
+        }
     }
 }
 
@@ -152,7 +162,14 @@ impl ChainState {
     fn new(network: Network) -> Self {
         Self {
             network,
-            ..Self::default()
+            tip: None,
+            blocks: HashMap::new(),
+            block_deltas: HashMap::new(),
+            txs: HashMap::new(),
+            utxos: HashMap::new(),
+            addresses: HashMap::new(),
+            next_height: 0,
+            pending: BTreeMap::new(),
         }
     }
 
