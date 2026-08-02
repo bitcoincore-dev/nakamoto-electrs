@@ -1,3 +1,3 @@
-pub use nakamoto_client::*;
-
-fn main() {}
+fn main() -> anyhow::Result<()> {
+    nakamoto_electrs::run()
+}

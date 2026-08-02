@@ -1,3 +1,3 @@
-pub use electrs::*;
-
-fn main() {}
+fn main() -> anyhow::Result<()> {
+    nakamoto_electrs::run()
+}
