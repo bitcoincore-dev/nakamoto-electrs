@@ -26,6 +26,30 @@ type NodeReactor = Reactor<TcpStream>;
 struct Cli {
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     logging: LogLevel,
+
+    /// Connect to the specified peers only.
+    #[arg(long)]
+    connect: Vec<SocketAddr>,
+
+    /// Listen on one of these addresses for peer connections.
+    #[arg(long)]
+    listen: Vec<SocketAddr>,
+
+    /// Use the bitcoin test network.
+    #[arg(long)]
+    testnet: bool,
+
+    /// Only connect to IPv4 addresses.
+    #[arg(short = '4', long)]
+    ipv4: bool,
+
+    /// Only connect to IPv6 addresses.
+    #[arg(short = '6', long)]
+    ipv6: bool,
+
+    /// Root directory for Nakamoto files.
+    #[arg(long)]
+    root: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -422,11 +446,20 @@ pub fn run() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    let network = match std::env::var("NAKAMOTO_NETWORK").as_deref() {
-        Ok("bitcoin") => Network::Bitcoin,
-        Ok("regtest") => Network::Regtest,
-        Ok("signet") => Network::Signet,
-        _ => Network::Testnet,
+    let network = if cli.testnet {
+        Network::Testnet
+    } else {
+        Network::Bitcoin
+    };
+
+    let domains = if cli.ipv4 && cli.ipv6 {
+        vec![nakamoto_client::Domain::IPV4, nakamoto_client::Domain::IPV6]
+    } else if cli.ipv4 {
+        vec![nakamoto_client::Domain::IPV4]
+    } else if cli.ipv6 {
+        vec![nakamoto_client::Domain::IPV6]
+    } else {
+        vec![nakamoto_client::Domain::IPV4, nakamoto_client::Domain::IPV6]
     };
 
     let api_addr: SocketAddr = std::env::var("NAKAMOTO_API_ADDR")
@@ -437,8 +470,14 @@ pub fn run() -> Result<()> {
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 38301)));
 
     let mut config = Config::new(NakamotoNetwork::from(network));
-    config.root = PathBuf::from(std::env::var("NAKAMOTO_ROOT").unwrap_or_else(|_| ".nakamoto-electrs".into()));
-    config.listen = vec![];
+    config.connect = cli.connect;
+    config.listen = if cli.listen.is_empty() {
+        vec![([0, 0, 0, 0], 0).into()]
+    } else {
+        cli.listen
+    };
+    config.domains = domains;
+    config.root = cli.root.unwrap_or_else(|| PathBuf::from(".nakamoto-electrs"));
 
     let client = Client::<NodeReactor>::new().context("failed to create Nakamoto client")?;
     let handle = client.handle();
