@@ -513,9 +513,6 @@ where
                         }
                         nakamoto_client::Event::BlockConnected { hash, height, .. } => {
                             debug!(target: "node", %hash, height, "block connected");
-                            if let Err(err) = handle.get_block(&hash) {
-                                warn!(target: "node", %hash, ?err, "failed to request block");
-                            }
                         }
                         nakamoto_client::Event::BlockDisconnected { hash, height, .. } => {
                             debug!(target: "node", %hash, height, "block disconnected");
