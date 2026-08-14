@@ -23,8 +23,19 @@ pub enum Network {
     Regtest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseNetworkError;
+
+impl std::fmt::Display for ParseNetworkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid Bitcoin network")
+    }
+}
+
+impl std::error::Error for ParseNetworkError {}
+
 impl std::str::FromStr for Network {
-    type Err = ();
+    type Err = ParseNetworkError;
 
     /// Parse a network name from a string slice (case-insensitive).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -33,7 +44,7 @@ impl std::str::FromStr for Network {
             "testnet" | "test" => Ok(Self::Testnet),
             "signet" => Ok(Self::Signet),
             "regtest" => Ok(Self::Regtest),
-            _ => Err(()),
+            _ => Err(ParseNetworkError),
         }
     }
 }
@@ -71,8 +82,9 @@ impl Network {
 
 /// Validate that a raw script hex string contains only hex characters and has
 /// even length (i.e. it can be decoded into bytes).
+#[allow(clippy::manual_is_multiple_of)]
 pub fn is_valid_script_hex(hex: &str) -> bool {
-    !hex.is_empty() && hex.len().is_multiple_of(2) && hex.chars().all(|c| c.is_ascii_hexdigit())
+    !hex.is_empty() && hex.len() % 2 == 0 && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Convert a big-endian txid hex string (as returned by block explorers) into
@@ -102,8 +114,9 @@ pub fn format_fee_rate(sats_per_vbyte: f64) -> String {
 
 /// Returns `true` if the given block height is a Bitcoin halving height
 /// (mainnet schedule: every 210,000 blocks starting at 210,000).
+#[allow(clippy::manual_is_multiple_of)]
 pub fn is_halving_height(height: u32) -> bool {
-    height > 0 && height.is_multiple_of(210_000)
+    height > 0 && height % 210_000 == 0
 }
 
 /// Estimate the approximate Bitcoin block reward in satoshis for a given
@@ -169,34 +182,30 @@ mod tests {
     #[test]
     fn network_parse_mainnet_variants() {
         for s in &["mainnet", "bitcoin", "main", "MAINNET", "Bitcoin"] {
-            assert_eq!(
-            Network::from_str(s).ok(),
-                Some(Network::Mainnet),
-                "failed for {s}"
-            );
+            assert_eq!(Network::from_str(s), Ok(Network::Mainnet), "failed for {s}");
         }
     }
 
     #[test]
     fn network_parse_testnet() {
-        assert_eq!(Network::from_str("testnet").ok(), Some(Network::Testnet));
-        assert_eq!(Network::from_str("test").ok(), Some(Network::Testnet));
+        assert_eq!(Network::from_str("testnet"), Ok(Network::Testnet));
+        assert_eq!(Network::from_str("test"), Ok(Network::Testnet));
     }
 
     #[test]
     fn network_parse_signet() {
-        assert_eq!(Network::from_str("signet").ok(), Some(Network::Signet));
+        assert_eq!(Network::from_str("signet"), Ok(Network::Signet));
     }
 
     #[test]
     fn network_parse_regtest() {
-        assert_eq!(Network::from_str("regtest").ok(), Some(Network::Regtest));
+        assert_eq!(Network::from_str("regtest"), Ok(Network::Regtest));
     }
 
     #[test]
     fn network_parse_unknown() {
-        assert_eq!(Network::from_str("").ok(), None);
-        assert_eq!(Network::from_str("foonet").ok(), None);
+        assert_eq!(Network::from_str(""), Err(ParseNetworkError));
+        assert_eq!(Network::from_str("foonet"), Err(ParseNetworkError));
     }
 
     // --- Network::is_production ---

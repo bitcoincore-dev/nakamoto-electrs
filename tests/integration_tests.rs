@@ -23,11 +23,7 @@ fn all_networks_parse_from_canonical_names() {
         ("regtest", Network::Regtest),
     ];
     for (s, expected) in cases {
-        assert_eq!(
-            Network::from_str(s).ok(),
-            Some(expected),
-            "failed to parse '{s}'"
-        );
+        assert_eq!(Network::from_str(s), Ok(expected), "failed to parse '{s}'");
     }
 }
 
