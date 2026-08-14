@@ -2,7 +2,8 @@
 
 ## sccache
 
-Install `sccache` and keep it on your `PATH`, then Cargo will use it via `.cargo/config.toml`.
+`sccache` is optional. If you want to use it, install `sccache` and set
+`RUSTC_WRAPPER=sccache` in your shell before running Cargo.
 
 Example:
 

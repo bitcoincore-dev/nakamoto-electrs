@@ -25,6 +25,7 @@ pub enum Network {
 
 impl Network {
     /// Parse a network name from a string slice (case-insensitive).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "mainnet" | "bitcoin" | "main" => Some(Self::Mainnet),
@@ -68,7 +69,7 @@ impl Network {
 /// Validate that a raw script hex string contains only hex characters and has
 /// even length (i.e. it can be decoded into bytes).
 pub fn is_valid_script_hex(hex: &str) -> bool {
-    !hex.is_empty() && hex.len() % 2 == 0 && hex.chars().all(|c| c.is_ascii_hexdigit())
+    !hex.is_empty() && hex.len().is_multiple_of(2) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Convert a big-endian txid hex string (as returned by block explorers) into
@@ -99,7 +100,7 @@ pub fn format_fee_rate(sats_per_vbyte: f64) -> String {
 /// Returns `true` if the given block height is a Bitcoin halving height
 /// (mainnet schedule: every 210,000 blocks starting at 210,000).
 pub fn is_halving_height(height: u32) -> bool {
-    height > 0 && height % 210_000 == 0
+    height > 0 && height.is_multiple_of(210_000)
 }
 
 /// Estimate the approximate Bitcoin block reward in satoshis for a given
