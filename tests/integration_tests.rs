@@ -8,6 +8,7 @@ use nakamoto_electrs::{
     Network, block_reward_sats, format_fee_rate, is_halving_height, is_valid_script_hex,
     saturating_sub, txid_to_electrum_bytes,
 };
+use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
 // Network round-trip
@@ -23,7 +24,7 @@ fn all_networks_parse_from_canonical_names() {
     ];
     for (s, expected) in cases {
         assert_eq!(
-            Network::from_str(s),
+            Network::from_str(s).ok(),
             Some(expected),
             "failed to parse '{s}'"
         );

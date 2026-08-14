@@ -23,19 +23,22 @@ pub enum Network {
     Regtest,
 }
 
-impl Network {
+impl std::str::FromStr for Network {
+    type Err = ();
+
     /// Parse a network name from a string slice (case-insensitive).
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "mainnet" | "bitcoin" | "main" => Some(Self::Mainnet),
-            "testnet" | "test" => Some(Self::Testnet),
-            "signet" => Some(Self::Signet),
-            "regtest" => Some(Self::Regtest),
-            _ => None,
+            "mainnet" | "bitcoin" | "main" => Ok(Self::Mainnet),
+            "testnet" | "test" => Ok(Self::Testnet),
+            "signet" => Ok(Self::Signet),
+            "regtest" => Ok(Self::Regtest),
+            _ => Err(()),
         }
     }
+}
 
+impl Network {
     /// Returns `true` for networks where real value is at stake.
     pub fn is_production(&self) -> bool {
         matches!(self, Self::Mainnet)
@@ -120,6 +123,7 @@ pub fn block_reward_sats(height: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     // --- arithmetic ---
 
@@ -166,7 +170,7 @@ mod tests {
     fn network_parse_mainnet_variants() {
         for s in &["mainnet", "bitcoin", "main", "MAINNET", "Bitcoin"] {
             assert_eq!(
-                Network::from_str(s),
+            Network::from_str(s).ok(),
                 Some(Network::Mainnet),
                 "failed for {s}"
             );
@@ -175,24 +179,24 @@ mod tests {
 
     #[test]
     fn network_parse_testnet() {
-        assert_eq!(Network::from_str("testnet"), Some(Network::Testnet));
-        assert_eq!(Network::from_str("test"), Some(Network::Testnet));
+        assert_eq!(Network::from_str("testnet").ok(), Some(Network::Testnet));
+        assert_eq!(Network::from_str("test").ok(), Some(Network::Testnet));
     }
 
     #[test]
     fn network_parse_signet() {
-        assert_eq!(Network::from_str("signet"), Some(Network::Signet));
+        assert_eq!(Network::from_str("signet").ok(), Some(Network::Signet));
     }
 
     #[test]
     fn network_parse_regtest() {
-        assert_eq!(Network::from_str("regtest"), Some(Network::Regtest));
+        assert_eq!(Network::from_str("regtest").ok(), Some(Network::Regtest));
     }
 
     #[test]
     fn network_parse_unknown() {
-        assert_eq!(Network::from_str(""), None);
-        assert_eq!(Network::from_str("foonet"), None);
+        assert_eq!(Network::from_str("").ok(), None);
+        assert_eq!(Network::from_str("foonet").ok(), None);
     }
 
     // --- Network::is_production ---
