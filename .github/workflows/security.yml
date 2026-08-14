@@ -23,8 +23,11 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@cargo-binstall
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo binstall --locked --no-confirm cargo-audit
 
       - name: Run cargo audit
         run: cargo audit
