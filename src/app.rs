@@ -1,15 +1,18 @@
-use std::net::TcpStream;
 use std::fs;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::net::TcpStream;
 use std::sync::Once;
 use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use nakamoto_client::Event;
 use nakamoto_client::{Client, handle::Handle as _};
 use nakamoto_common::bitcoin::network::constants::ServiceFlags;
-use nakamoto_client::Event;
 use nakamoto_net_poll::Reactor;
 use tracing::{error, info, warn};
 use tracing_subscriber::FmtSubscriber;
@@ -94,11 +97,13 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
                     let _ = thread_handle.join();
                     return Ok(());
                 }
-                break (handle, thread_handle)
+                break (handle, thread_handle);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = thread_handle.join();
-                return Err(anyhow::anyhow!("nakamoto client startup channel disconnected"));
+                return Err(anyhow::anyhow!(
+                    "nakamoto client startup channel disconnected"
+                ));
             }
         }
     };
@@ -267,11 +272,13 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
                     let _ = thread_handle.join();
                     return Ok(());
                 }
-                break (handle, thread_handle)
+                break (handle, thread_handle);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = thread_handle.join();
-                return Err(anyhow::anyhow!("nakamoto client startup channel disconnected"));
+                return Err(anyhow::anyhow!(
+                    "nakamoto client startup channel disconnected"
+                ));
             }
         }
     };

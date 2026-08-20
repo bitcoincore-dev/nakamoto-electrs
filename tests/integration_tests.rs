@@ -4,12 +4,12 @@
 //! covering interactions between multiple modules rather than individual
 //! functions in isolation.
 
+use nakamoto_electrs::indexer::Indexer;
+use nakamoto_electrs::metrics::Metrics;
 use nakamoto_electrs::{
     Network, block_reward_sats, format_fee_rate, is_halving_height, is_valid_script_hex,
     saturating_sub, txid_to_electrum_bytes,
 };
-use nakamoto_electrs::indexer::Indexer;
-use nakamoto_electrs::metrics::Metrics;
 use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
@@ -314,10 +314,7 @@ mod mock {
 }
 
 use bitcoin::{blockdata::script::Builder, hashes::Hash};
-use nakamoto_electrs::{
-    block_source::BlockEvent,
-    indexer::ScriptHash,
-};
+use nakamoto_electrs::{block_source::BlockEvent, indexer::ScriptHash};
 
 fn p2pkh_script() -> bitcoin::ScriptBuf {
     let mut s = vec![0x76u8, 0xa9, 0x14];
