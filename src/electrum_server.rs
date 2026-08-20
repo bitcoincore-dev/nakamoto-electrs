@@ -14,6 +14,7 @@
 //! | `blockchain.headers.subscribe` | Subscribe to new block headers |
 //! | `blockchain.scripthash.get_history` | Transaction history for a script hash |
 //! | `blockchain.scripthash.get_balance` | Balance for a script hash |
+//! | `blockchain.scripthash.get_mempool` | Mempool transactions touching a script hash |
 //! | `blockchain.scripthash.listunspent` | List unspent outputs for a script hash |
 //! | `blockchain.scripthash.subscribe` | Subscribe to script-hash status changes |
 //! | `blockchain.transaction.get` | Fetch a raw transaction by txid |
@@ -468,6 +469,7 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.headers.subscribe" => handle_headers_subscribe(state, indexer, source),
         "blockchain.scripthash.get_history" => handle_scripthash_get_history(&params, indexer),
         "blockchain.scripthash.get_balance" => handle_scripthash_get_balance(&params, indexer),
+        "blockchain.scripthash.get_mempool" => handle_scripthash_get_mempool(&params, indexer),
         "blockchain.scripthash.listunspent" => handle_scripthash_listunspent(&params, indexer),
         "blockchain.scripthash.subscribe" => handle_scripthash_subscribe(&params, state, indexer),
         "blockchain.transaction.get" => handle_transaction_get(&params, indexer),
@@ -551,6 +553,28 @@ fn handle_scripthash_get_balance(
         "confirmed": confirmed,
         "unconfirmed": unconfirmed
     }))
+}
+
+fn handle_scripthash_get_mempool(
+    params: &Value,
+    indexer: &Indexer,
+) -> std::result::Result<Value, String> {
+    let sh = parse_scripthash(params)?;
+    let entries = indexer
+        .get_mempool(&sh)
+        .map_err(|e| format!("mempool lookup failed: {e:#}"))?;
+    Ok(Value::Array(
+        entries
+            .into_iter()
+            .map(|e| {
+                json!({
+                    "tx_hash": e.txid.to_string(),
+                    "height": e.height,
+                    "fee": e.fee,
+                })
+            })
+            .collect(),
+    ))
 }
 
 fn handle_scripthash_listunspent(
