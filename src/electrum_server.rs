@@ -77,9 +77,7 @@ pub(crate) fn apply_tx_status_change(
     txid: &str,
     status: &str,
 ) -> Result<()> {
-    let txid: bitcoin::Txid = txid
-        .parse()
-        .context("invalid txid in tx status event")?;
+    let txid: bitcoin::Txid = txid.parse().context("invalid txid in tx status event")?;
     let affected = if status.contains("reverted") {
         indexer.restore_pending_transaction(&txid)?
     } else if status.contains("included in block") || status.contains("replaced by") {
@@ -897,7 +895,11 @@ mod tests {
             }
             fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
                 let height = self.headers.keys().next_back().copied().unwrap_or(0);
-                let header = self.headers.get(&height).copied().unwrap_or_else(|| Self::header(0));
+                let header = self
+                    .headers
+                    .get(&height)
+                    .copied()
+                    .unwrap_or_else(|| Self::header(0));
                 Ok((height, header.block_hash()))
             }
             fn block_header(
@@ -920,10 +922,7 @@ mod tests {
 
         let header = handle_block_header(&json!([1]), &source).expect("block header");
         assert!(header.is_string());
-        assert_eq!(
-            header,
-            Value::String(serialize_hex(&FakeSource::header(1)))
-        );
+        assert_eq!(header, Value::String(serialize_hex(&FakeSource::header(1))));
 
         let range = handle_block_headers(&json!([1, 2]), &source).expect("block headers");
         assert_eq!(range["count"], json!(2));
@@ -1486,17 +1485,16 @@ mod tests {
             fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
                 let headers = self.headers.lock().unwrap();
                 let height = headers.keys().next_back().copied().unwrap_or(0);
-                let header = headers
-                    .get(&height)
-                    .copied()
-                    .unwrap_or_else(|| bitcoin::blockdata::block::Header {
+                let header = headers.get(&height).copied().unwrap_or_else(|| {
+                    bitcoin::blockdata::block::Header {
                         version: bitcoin::blockdata::block::Version::ONE,
                         prev_blockhash: bitcoin::BlockHash::all_zeros(),
                         merkle_root: bitcoin::TxMerkleNode::all_zeros(),
                         time: 0,
                         bits: bitcoin::CompactTarget::from_consensus(0x1d00ffff),
                         nonce: 0,
-                    });
+                    }
+                });
                 Ok((height, header.block_hash()))
             }
 
@@ -1522,8 +1520,9 @@ mod tests {
             let fee_rate = Arc::new(FeeRateState::new());
             let pending_changes = PendingChangeBroadcaster::default();
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let server = ElectrumServer::bind(addr, indexer, metrics, None, fee_rate, pending_changes)
-                .expect("bind");
+            let server =
+                ElectrumServer::bind(addr, indexer, metrics, None, fee_rate, pending_changes)
+                    .expect("bind");
             let local_addr = server.local_addr();
             let shutdown = Arc::new(AtomicBool::new(false));
             let shutdown_thread = Arc::clone(&shutdown);
@@ -1537,7 +1536,9 @@ mod tests {
         let (addr, shutdown) = start_server(Arc::clone(&source));
 
         let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         stream
             .write_all(
                 br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.headers.subscribe","params":[]}"#,
@@ -1552,7 +1553,10 @@ mod tests {
                 Ok(0) => continue,
                 Ok(_) => break,
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    assert!(std::time::Instant::now() < deadline, "timed out waiting for response");
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for response"
+                    );
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(err) => panic!("failed to read response: {err}"),
@@ -1580,7 +1584,10 @@ mod tests {
                 Ok(0) => continue,
                 Ok(_) => break,
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    assert!(std::time::Instant::now() < deadline, "timed out waiting for notification");
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for notification"
+                    );
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(err) => panic!("failed to read notification: {err}"),
@@ -1619,13 +1626,18 @@ mod tests {
             .expect("subscribe");
         assert!(empty.is_null());
 
-        indexer.track_pending_transaction(&tx).expect("track pending");
+        indexer
+            .track_pending_transaction(&tx)
+            .expect("track pending");
         let pending = handle_scripthash_subscribe(&json!([sh.to_hex()]), &mut state, &indexer)
             .expect("subscribe pending");
         assert!(pending.is_string());
         assert_eq!(state.subscribed_scripthashes, vec![sh]);
         assert_eq!(
-            state.status_by_scripthash.get(&sh).and_then(|status| status.as_deref()),
+            state
+                .status_by_scripthash
+                .get(&sh)
+                .and_then(|status| status.as_deref()),
             pending.as_str()
         );
     }
