@@ -206,9 +206,17 @@ impl IndexState {
         Ok(())
     }
 
-    fn forget_pending_transaction(&mut self, txid: &Txid) {
+    fn forget_pending_transaction_internal(&mut self, txid: &Txid) {
         self.pending_txs.remove(txid);
         self.rebuild_pending_view();
+    }
+
+    fn restore_pending_transaction(&mut self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
+        let Some(tx) = self.store.load_tx(txid)? else {
+            return Ok(None);
+        };
+        self.track_pending_transaction_internal(&tx)?;
+        Ok(Some(self.pending_affected_scripts_for_tx(&tx)))
     }
 
     fn pending_history_for_script(&self, sh: &ScriptHash) -> Vec<TxEntry> {
@@ -313,7 +321,7 @@ impl IndexState {
         let mut sequence = 0u32;
         for tx in &block.txdata {
             let txid = tx.compute_txid();
-            self.forget_pending_transaction(&txid);
+            self.forget_pending_transaction_internal(&txid);
             self.store.store_tx(tx)?;
             let tx_key = self.store.store_journal_action(
                 height,
@@ -704,6 +712,23 @@ impl Indexer {
             .pending_affected_scripts_for_tx(tx))
     }
 
+    pub fn restore_pending_transaction(&self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
+        self.state
+            .write()
+            .expect("index write lock poisoned")
+            .restore_pending_transaction(txid)
+    }
+
+    pub fn forget_pending_transaction(&self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
+        let mut state = self.state.write().expect("index write lock poisoned");
+        let Some(tx) = state.pending_txs.remove(txid) else {
+            return Ok(None);
+        };
+        let affected = state.pending_affected_scripts_for_tx(&tx);
+        state.rebuild_pending_view();
+        Ok(Some(affected))
+    }
+
     pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.state
             .read()
@@ -941,5 +966,46 @@ mod tests {
         reopened.rollback_height(2).expect("rollback after restart");
         assert_eq!(reopened.get_balance(&sh).unwrap(), 1000);
         assert_eq!(reopened.get_history(&sh).len(), 1);
+    }
+
+    #[test]
+    fn restore_and_forget_pending_transaction_round_trip() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let script = Builder::from(p2pkh_script()).into_script();
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(750),
+                script_pubkey: script.clone(),
+            }],
+        };
+        let txid = tx.compute_txid();
+        indexer.store_transaction(&tx).expect("store tx");
+
+        let restored = indexer
+            .restore_pending_transaction(&txid)
+            .expect("restore pending")
+            .expect("restored tx");
+        let sh = ScriptHash::from_script(&script);
+        assert_eq!(restored, vec![sh]);
+        assert_eq!(indexer.get_balance(&sh).unwrap(), 0);
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 750);
+        assert_eq!(indexer.list_unspent(&sh).unwrap().len(), 1);
+
+        let forgotten = indexer
+            .forget_pending_transaction(&txid)
+            .expect("forget pending")
+            .expect("forgotten tx");
+        assert_eq!(forgotten, vec![sh]);
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 0);
+        assert!(indexer.list_unspent(&sh).unwrap().is_empty());
     }
 }

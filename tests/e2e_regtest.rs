@@ -83,7 +83,8 @@ fn start_electrum_server() -> SocketAddr {
 
     // Port 0 lets the OS pick a free port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let server = ElectrumServer::bind(addr, indexer, metrics, None, fee_rate)
+    let pending_changes = nakamoto_electrs::electrum_server::PendingChangeBroadcaster::default();
+    let server = ElectrumServer::bind(addr, indexer, metrics, None, fee_rate, pending_changes)
         .expect("failed to bind ElectrumServer");
     let local_addr = server.local_addr();
 

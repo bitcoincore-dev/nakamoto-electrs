@@ -51,7 +51,7 @@ pub trait TransactionBroadcaster: Send + Sync {
 }
 
 #[derive(Clone, Default)]
-struct PendingChangeBroadcaster {
+pub struct PendingChangeBroadcaster {
     senders: Arc<Mutex<Vec<CbSender<Vec<ScriptHash>>>>>,
 }
 
@@ -69,6 +69,30 @@ impl PendingChangeBroadcaster {
         let mut guard = self.senders.lock().expect("pending change lock poisoned");
         guard.retain(|tx| tx.send(affected.clone()).is_ok());
     }
+}
+
+pub(crate) fn apply_tx_status_change(
+    indexer: &Indexer,
+    pending_changes: &PendingChangeBroadcaster,
+    txid: &str,
+    status: &str,
+) -> Result<()> {
+    let txid: bitcoin::Txid = txid
+        .parse()
+        .context("invalid txid in tx status event")?;
+    let affected = if status.contains("reverted") {
+        indexer.restore_pending_transaction(&txid)?
+    } else if status.contains("included in block") || status.contains("replaced by") {
+        indexer.forget_pending_transaction(&txid)?
+    } else {
+        None
+    };
+
+    if let Some(affected) = affected {
+        pending_changes.broadcast(affected);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -133,6 +157,7 @@ impl ElectrumServer {
         metrics: Metrics,
         broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
         fee_rate: Arc<FeeRateState>,
+        pending_changes: PendingChangeBroadcaster,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).context("failed to bind Electrum listener")?;
         info!("Electrum server listening on {addr}");
@@ -142,7 +167,7 @@ impl ElectrumServer {
             metrics,
             broadcaster,
             fee_rate,
-            pending_changes: PendingChangeBroadcaster::default(),
+            pending_changes,
         })
     }
 
@@ -980,6 +1005,80 @@ mod tests {
         broadcaster.broadcast(vec![sh]);
         let received = rx.recv().expect("pending change");
         assert_eq!(received, vec![sh]);
+    }
+
+    #[test]
+    fn tx_status_reverted_restores_pending_transaction() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+        let script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: script.clone(),
+            }],
+        };
+        indexer.store_transaction(&tx).expect("store");
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &tx.compute_txid().to_string(),
+            "transaction has been reverted",
+        )
+        .expect("restore");
+
+        let sh = ScriptHash::from_script(&script);
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
+        assert_eq!(rx.recv().expect("notification"), vec![sh]);
+    }
+
+    #[test]
+    fn tx_status_confirmed_clears_pending_transaction() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+        let script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: script.clone(),
+            }],
+        };
+        let txid = tx.compute_txid();
+        indexer.store_transaction(&tx).expect("store");
+        indexer.restore_pending_transaction(&txid).expect("restore");
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &txid.to_string(),
+            "transaction was included in block 0000000000000000000000000000000000000000000000000000000000000000 at height 1",
+        )
+        .expect("forget");
+
+        let sh = ScriptHash::from_script(&script);
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 0);
+        assert!(rx.recv().map(|affected| affected == vec![sh]).unwrap());
     }
 
     #[test]

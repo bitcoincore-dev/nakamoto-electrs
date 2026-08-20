@@ -15,12 +15,16 @@ use nakamoto_client::Event;
 use nakamoto_client::{Client, handle::Handle as _};
 use nakamoto_common::bitcoin::network::constants::ServiceFlags;
 use nakamoto_net_poll::Reactor;
+use crossbeam_channel::RecvTimeoutError;
 use tracing::{error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
     config::{Config, NakamotoConfig},
-    electrum_server::{ElectrumServer, FeeRateState, TransactionBroadcaster},
+    electrum_server::{
+        apply_tx_status_change, ElectrumServer, FeeRateState, PendingChangeBroadcaster,
+        TransactionBroadcaster,
+    },
     indexer::Indexer,
     metrics::Metrics,
     nakamoto_source::NakamotoBlockSource,
@@ -121,6 +125,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     let indexer = Indexer::new(cfg.index_dir.join("index"), metrics.clone())?;
     let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(handle.clone());
     let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
 
     let _indexer_thread = indexer.clone().start(source.as_ref());
     let fee_events = handle.events();
@@ -132,6 +137,38 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
                 for event in &fee_events {
                     if let Event::FeeEstimated { fees, .. } = event {
                         fee_rate.update_sat_per_vb(fees.median);
+                    }
+                }
+            })?
+    };
+    let tx_status_events = handle.events();
+    let tx_status_thread = {
+        let indexer = indexer.clone();
+        let pending_changes = pending_changes.clone();
+        let shutdown = Arc::clone(&shutdown);
+        thread::Builder::new()
+            .name("tx-status".into())
+            .spawn(move || {
+                loop {
+                    if shutdown.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match tx_status_events.recv_timeout(Duration::from_millis(200)) {
+                        Ok(Event::TxStatusChanged { txid, status }) => {
+                            if let Err(e) =
+                                apply_tx_status_change(
+                                    &indexer,
+                                    &pending_changes,
+                                    &txid.to_string(),
+                                    &status.to_string(),
+                                )
+                            {
+                                error!(target: "nakamoto", "tx status handling failed: {e:#}");
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
             })?
@@ -203,6 +240,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
         metrics,
         Some(broadcaster),
         fee_rate,
+        pending_changes,
     )?;
 
     info!("Electrum server ready on {}", cfg.electrum_listen_addr);
@@ -213,6 +251,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     }
     let _ = client_thread.join();
     let _ = fee_rate_thread.join();
+    let _ = tx_status_thread.join();
     let _ = wait_handle.join();
     Ok(())
 }
