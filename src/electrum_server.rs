@@ -26,7 +26,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -43,6 +43,28 @@ use crate::metrics::Metrics;
 
 pub trait TransactionBroadcaster: Send + Sync {
     fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String>;
+}
+
+#[derive(Debug, Default)]
+pub struct FeeRateState {
+    sat_per_vb: AtomicU64,
+}
+
+impl FeeRateState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn update_sat_per_vb(&self, sat_per_vb: u64) {
+        self.sat_per_vb.store(sat_per_vb, Ordering::Relaxed);
+    }
+
+    pub fn current_sat_per_vb(&self) -> Option<u64> {
+        match self.sat_per_vb.load(Ordering::Relaxed) {
+            0 => None,
+            value => Some(value),
+        }
+    }
 }
 
 impl<T> TransactionBroadcaster for T
@@ -73,6 +95,7 @@ pub struct ElectrumServer {
     indexer: Indexer,
     metrics: Metrics,
     broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
+    fee_rate: Arc<FeeRateState>,
 }
 
 impl ElectrumServer {
@@ -82,6 +105,7 @@ impl ElectrumServer {
         indexer: Indexer,
         metrics: Metrics,
         broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
+        fee_rate: Arc<FeeRateState>,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).context("failed to bind Electrum listener")?;
         info!("Electrum server listening on {addr}");
@@ -90,6 +114,7 @@ impl ElectrumServer {
             indexer,
             metrics,
             broadcaster,
+            fee_rate,
         })
     }
 
@@ -109,6 +134,7 @@ impl ElectrumServer {
         let indexer = Arc::new(self.indexer);
         let metrics = Arc::new(self.metrics);
         let broadcaster = self.broadcaster.clone();
+        let fee_rate = Arc::clone(&self.fee_rate);
 
         for stream in self.listener.incoming() {
             match stream {
@@ -123,6 +149,7 @@ impl ElectrumServer {
                     let source = Arc::clone(&source);
                     let metrics = Arc::clone(&metrics);
                     let broadcaster = broadcaster.clone();
+                    let fee_rate = Arc::clone(&fee_rate);
 
                     metrics.inc_electrum_connections();
 
@@ -130,7 +157,14 @@ impl ElectrumServer {
                         .name(format!("electrum-{peer}"))
                         .spawn(move || {
                             if let Err(e) =
-                                handle_client(stream, &indexer, &source, &metrics, broadcaster)
+                                handle_client(
+                                    stream,
+                                    &indexer,
+                                    &source,
+                                    &metrics,
+                                    broadcaster,
+                                    &fee_rate,
+                                )
                             {
                                 debug!("client {peer} disconnected: {e:#}");
                             }
@@ -171,6 +205,7 @@ fn handle_client<S: BlockSource>(
     source: &S,
     metrics: &Metrics,
     broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
+    fee_rate: &Arc<FeeRateState>,
 ) -> Result<()> {
     let peer = stream.peer_addr()?.to_string();
     let mut writer = stream.try_clone().context("clone stream for write")?;
@@ -192,6 +227,7 @@ fn handle_client<S: BlockSource>(
             source,
             metrics,
             broadcaster.as_ref(),
+            fee_rate,
         );
         let response_str = serde_json::to_string(&response)? + "\n";
         debug!("→ {peer}: {}", response_str.trim_end());
@@ -213,6 +249,7 @@ fn dispatch_request<S: BlockSource>(
     source: &S,
     metrics: &Metrics,
     broadcaster: Option<&Arc<dyn TransactionBroadcaster>>,
+    fee_rate: &Arc<FeeRateState>,
 ) -> Value {
     let req: Value = match serde_json::from_str(raw) {
         Ok(v) => v,
@@ -246,7 +283,7 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.transaction.broadcast" => {
             handle_transaction_broadcast(&params, metrics, broadcaster)
         }
-        "blockchain.estimatefee" => handle_estimatefee(&params),
+        "blockchain.estimatefee" => handle_estimatefee(&params, fee_rate),
         "blockchain.block.header" => handle_block_header(&params, source),
         "blockchain.block.headers" => handle_block_headers(&params, source),
         unknown => {
@@ -401,11 +438,15 @@ fn handle_transaction_broadcast(
     }
 }
 
-fn handle_estimatefee(params: &Value) -> std::result::Result<Value, String> {
+fn handle_estimatefee(params: &Value, fee_rate: &Arc<FeeRateState>) -> std::result::Result<Value, String> {
     let _blocks = params.get(0).and_then(Value::as_u64).unwrap_or(6);
-    // Nakamoto does not yet expose a fee estimator; return -1 as per the
-    // Electrum protocol spec for "unknown".
-    Ok(json!(-1))
+    match fee_rate.current_sat_per_vb() {
+        Some(sat_per_vb) => {
+            let btc_per_kvb = (sat_per_vb as f64) * 0.00001f64;
+            Ok(json!(btc_per_kvb))
+        }
+        None => Ok(json!(-1)),
+    }
 }
 
 fn handle_block_header<S: BlockSource>(
@@ -559,8 +600,17 @@ mod tests {
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
         let source = FakeSource;
         let mut state = ClientState::new();
+        let fee_rate = Arc::new(FeeRateState::new());
         let raw = r#"{"jsonrpc":"2.0","id":1,"method":"server.ping","params":[]}"#;
-        let resp = dispatch_request(raw, &mut state, &indexer, &source, &Metrics::new(), None);
+        let resp = dispatch_request(
+            raw,
+            &mut state,
+            &indexer,
+            &source,
+            &Metrics::new(),
+            None,
+            &fee_rate,
+        );
         assert_eq!(resp["result"], Value::Null);
         assert_eq!(resp["id"], json!(1));
     }
@@ -622,5 +672,13 @@ mod tests {
             tempfile::tempdir().expect("temp").keep(),
             Metrics::new()
         ).expect("indexer")).is_ok());
+    }
+
+    #[test]
+    fn estimatefee_returns_latest_fee_when_available() {
+        let fee_rate = Arc::new(FeeRateState::new());
+        fee_rate.update_sat_per_vb(25);
+        let value = handle_estimatefee(&json!([6]), &fee_rate).expect("estimate");
+        assert_eq!(value, json!(0.00025f64));
     }
 }

@@ -5,13 +5,14 @@ use std::thread;
 use anyhow::Result;
 use nakamoto_client::{Client, handle::Handle as _};
 use nakamoto_common::bitcoin::network::constants::ServiceFlags;
+use nakamoto_client::Event;
 use nakamoto_net_poll::Reactor;
 use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
     config::{Config, NakamotoConfig},
-    electrum_server::{ElectrumServer, TransactionBroadcaster},
+    electrum_server::{ElectrumServer, FeeRateState, TransactionBroadcaster},
     indexer::Indexer,
     metrics::Metrics,
     nakamoto_source::NakamotoBlockSource,
@@ -63,8 +64,22 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     let source = Arc::new(NakamotoBlockSource::new(handle.clone()));
     let indexer = Indexer::new(cfg.index_dir.clone(), metrics.clone())?;
     let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(handle.clone());
+    let fee_rate = Arc::new(FeeRateState::new());
 
     let _indexer_thread = indexer.clone().start(source.as_ref());
+    let fee_events = handle.events();
+    let fee_rate_thread = {
+        let fee_rate = Arc::clone(&fee_rate);
+        thread::Builder::new()
+            .name("fee-rate".into())
+            .spawn(move || {
+                for event in &fee_events {
+                    if let Event::FeeEstimated { fees, .. } = event {
+                        fee_rate.update_sat_per_vb(fees.median);
+                    }
+                }
+            })?
+    };
 
     info!("waiting for nakamoto to connect to peers...");
     match handle.wait_for_peers(1, ServiceFlags::NONE) {
@@ -74,13 +89,19 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
         }
     }
 
-    let server =
-        ElectrumServer::bind(cfg.electrum_listen_addr, indexer, metrics, Some(broadcaster))?;
+    let server = ElectrumServer::bind(
+        cfg.electrum_listen_addr,
+        indexer,
+        metrics,
+        Some(broadcaster),
+        fee_rate,
+    )?;
 
     info!("Electrum server ready on {}", cfg.electrum_listen_addr);
     server.run(source)?;
 
     let _ = client_thread.join();
+    let _ = fee_rate_thread.join();
     Ok(())
 }
 
