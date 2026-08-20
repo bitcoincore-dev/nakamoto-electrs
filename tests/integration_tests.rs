@@ -190,7 +190,7 @@ mod mock {
 
     use anyhow::Result;
     use bitcoin::{
-        Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Witness,
+        Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Witness,
         absolute::LockTime,
         blockdata::block::Header as BlockHeader,
         blockdata::{
@@ -218,7 +218,7 @@ mod mock {
         let outputs = scripts
             .into_iter()
             .map(|s| TxOut {
-                value: bitcoin::Amount::from_sat(1000),
+                value: Amount::from_sat(1000),
                 script_pubkey: s,
             })
             .collect();
@@ -235,8 +235,33 @@ mod mock {
         }
     }
 
+    pub fn make_spend_tx(prevout: OutPoint, scripts: Vec<(u64, ScriptBuf)>) -> Transaction {
+        let outputs = scripts
+            .into_iter()
+            .map(|(value, script)| TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey: script,
+            })
+            .collect();
+        Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: prevout,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: outputs,
+        }
+    }
+
     pub fn make_block(prev: BlockHash, height: u32, scripts: Vec<ScriptBuf>) -> Block {
         let tx = make_tx(scripts);
+        make_block_with_txs(prev, height, vec![tx])
+    }
+
+    pub fn make_block_with_txs(prev: BlockHash, height: u32, txdata: Vec<Transaction>) -> Block {
         let header = BlockHeader {
             version: Version::ONE,
             prev_blockhash: prev,
@@ -245,10 +270,7 @@ mod mock {
             bits: CompactTarget::from_consensus(0x1d00ffff),
             nonce: height, // differentiate blocks by nonce
         };
-        Block {
-            header,
-            txdata: vec![tx],
-        }
+        Block { header, txdata }
     }
 
     /// A [`BlockSource`] that replays pre-built events from a channel.
@@ -294,8 +316,7 @@ mod mock {
 use bitcoin::{blockdata::script::Builder, hashes::Hash};
 use nakamoto_electrs::{
     block_source::BlockEvent,
-    indexer::{Indexer, ScriptHash},
-    metrics::Metrics,
+    indexer::ScriptHash,
 };
 
 fn p2pkh_script() -> bitcoin::ScriptBuf {
@@ -310,7 +331,7 @@ fn sh_of(script: &bitcoin::ScriptBuf) -> ScriptHash {
 }
 
 fn make_indexer(metrics: Metrics) -> Indexer {
-    let dir = tempdir().expect("temp index dir").into_path();
+    let dir = tempdir().expect("temp index dir").keep();
     Indexer::new(dir, metrics).expect("indexer")
 }
 
@@ -475,4 +496,36 @@ fn metrics_track_rolled_back_blocks() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     assert_eq!(metrics.blocks_rolled_back(), 1);
+}
+
+#[test]
+fn indexer_tracks_balance_and_spend_history() {
+    let source = mock::MockBlockSource::new();
+    let indexer = make_indexer(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script_a = p2pkh_script();
+    let script_b = mock::op_return_script(0x22);
+    let block1 = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script_a.clone()]);
+    let fund_txid = block1.txdata[0].compute_txid();
+    let fund_outpoint = bitcoin::OutPoint::new(fund_txid, 0);
+
+    source.push(BlockEvent::Connected {
+        block: block1,
+        height: 1,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert_eq!(indexer.get_balance(&sh_of(&script_a)).unwrap(), 1000);
+
+    let spend_tx = mock::make_spend_tx(fund_outpoint, vec![(900, script_b)]);
+    let block2 = mock::make_block_with_txs(bitcoin::BlockHash::all_zeros(), 2, vec![spend_tx]);
+    source.push(BlockEvent::Connected {
+        block: block2,
+        height: 2,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert_eq!(indexer.get_balance(&sh_of(&script_a)).unwrap(), 0);
+    assert_eq!(indexer.get_history(&sh_of(&script_a)).len(), 2);
 }

@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 use nakamoto_electrs::block_source::{BlockEvent, BlockSource};
-use nakamoto_electrs::electrum_server::ElectrumServer;
+use nakamoto_electrs::electrum_server::{ElectrumServer, FeeRateState};
 use nakamoto_electrs::indexer::Indexer;
 use nakamoto_electrs::metrics::Metrics;
 use tempfile::tempdir;
@@ -76,13 +76,15 @@ impl BlockSource for StubSource {
 /// background thread.  Returns the bound `SocketAddr`.
 fn start_electrum_server() -> SocketAddr {
     let metrics = Metrics::new();
-    let dir = tempdir().expect("temp index dir").into_path();
+    let dir = tempdir().expect("temp index dir").keep();
     let indexer = Indexer::new(dir, metrics.clone()).expect("indexer");
+    let fee_rate = std::sync::Arc::new(FeeRateState::new());
 
     // Port 0 lets the OS pick a free port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let server =
-        ElectrumServer::bind(addr, indexer, metrics).expect("failed to bind ElectrumServer");
+        ElectrumServer::bind(addr, indexer, metrics, None, fee_rate)
+            .expect("failed to bind ElectrumServer");
     let local_addr = server.local_addr();
 
     let source = Arc::new(StubSource);
