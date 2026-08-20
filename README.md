@@ -24,7 +24,7 @@ Bitcoin P2P Network
          ▼
 ┌───────────────────┐
 │  ElectrumServer   │  TCP JSON-RPC (Electrum protocol v1.4)
-│                   │  Answers: get_history, subscribe, broadcast, …
+│                   │  Answers: get_history, get_balance, listunspent, subscribe, broadcast, …
 └───────────────────┘
          │
          ▼
