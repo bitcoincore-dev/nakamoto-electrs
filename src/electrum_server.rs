@@ -66,6 +66,16 @@ impl ElectrumServer {
         })
     }
 
+    /// Return the local socket address the server is bound to.
+    ///
+    /// Useful in tests when the server was bound to port 0 and the OS
+    /// assigned a free port.
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.listener
+            .local_addr()
+            .expect("failed to get local_addr")
+    }
+
     /// Run the accept loop.  Blocks until the listener is closed or an
     /// unrecoverable error occurs.
     pub fn run<S: BlockSource + Sync>(self, source: Arc<S>) -> Result<()> {
