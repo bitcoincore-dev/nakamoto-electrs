@@ -805,6 +805,101 @@ fn electrum_transaction_broadcast_notifies_subscribed_scripthash() {
 }
 
 #[test]
+fn electrum_scripthash_queries_return_indexed_data() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let script = p2pkh_script();
+    let sh = sh_of(&script);
+    let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
+    source.push(BlockEvent::Connected {
+        block: block.clone(),
+        height: 1,
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while indexer.get_history(&sh).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for indexed history"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.get_history","params":["{}"]}}"#,
+        sh.to_hex()
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let history: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(history["result"].as_array().unwrap().len(), 1);
+    assert_eq!(history["result"][0]["height"], serde_json::json!(1));
+    assert_eq!(
+        history["result"][0]["tx_hash"],
+        serde_json::json!(block.txdata[0].compute_txid().to_string())
+    );
+
+    line.clear();
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.scripthash.get_balance","params":["{}"]}}"#,
+        sh.to_hex()
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+    reader.read_line(&mut line).unwrap();
+    let balance: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(balance["result"]["confirmed"], serde_json::json!(1000));
+    assert_eq!(balance["result"]["unconfirmed"], serde_json::json!(0));
+
+    line.clear();
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":3,"method":"blockchain.scripthash.listunspent","params":["{}"]}}"#,
+        sh.to_hex()
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+    reader.read_line(&mut line).unwrap();
+    let unspent: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(unspent["result"].as_array().unwrap().len(), 1);
+    assert_eq!(unspent["result"][0]["height"], serde_json::json!(1));
+    assert_eq!(unspent["result"][0]["value"], serde_json::json!(1000));
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+#[test]
 fn indexer_restores_and_forgets_pending_transactions() {
     let indexer = make_indexer(Metrics::new());
 
