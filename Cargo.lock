@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "nakamoto-electrs"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "bitcoin 0.32.102",
