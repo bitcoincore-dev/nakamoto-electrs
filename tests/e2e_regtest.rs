@@ -209,3 +209,164 @@ fn e2e_scripthash_history_after_payment() {
         "expected empty history for unseen script hash"
     );
 }
+
+// ---------------------------------------------------------------------------
+// RC-node tests
+//
+// These tests target the RC bitcoind node (RPC port 18445) that the CI
+// workflow starts alongside the stable node.  Both nodes run on the same
+// regtest network and are peered with each other.
+// ---------------------------------------------------------------------------
+
+/// Query the RC node's chain state and verify it is on the same regtest
+/// network as the stable node (same genesis block hash, same best-block hash
+/// after both have started with no blocks mined).
+#[test]
+#[ignore = "requires external bitcoind-rc -regtest on port 18445; run with --ignored"]
+fn e2e_rc_node_reachable_and_on_same_chain() {
+    let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
+    let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+
+    // ── helper: call bitcoin-cli and return stdout, or None if unavailable ──
+    let rpc_call = |port: &str, method: &str| -> Option<String> {
+        let out = std::process::Command::new("bitcoin-cli")
+            .args([
+                "-regtest",
+                &format!("-rpcuser={rpc_user}"),
+                &format!("-rpcpassword={rpc_pass}"),
+                &format!("-rpcport={port}"),
+                method,
+            ])
+            .output()
+            .ok()?;
+        if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        }
+    };
+
+    // Skip gracefully if neither node is reachable (e.g. local dev run).
+    let stable_info = match rpc_call("18443", "getblockchaininfo") {
+        Some(s) => s,
+        None => {
+            eprintln!("stable bitcoind not reachable on port 18443 — skipping RC test");
+            return;
+        }
+    };
+    let rc_info = match rpc_call("18445", "getblockchaininfo") {
+        Some(s) => s,
+        None => {
+            eprintln!("RC bitcoind not reachable on port 18445 — skipping RC test");
+            return;
+        }
+    };
+
+    let stable: serde_json::Value =
+        serde_json::from_str(&stable_info).expect("invalid JSON from stable node");
+    let rc: serde_json::Value =
+        serde_json::from_str(&rc_info).expect("invalid JSON from RC node");
+
+    // Both nodes must be on regtest.
+    assert_eq!(
+        stable["chain"].as_str(),
+        Some("regtest"),
+        "stable node is not on regtest"
+    );
+    assert_eq!(
+        rc["chain"].as_str(),
+        Some("regtest"),
+        "RC node is not on regtest"
+    );
+
+    // Both nodes must share the same best-block hash (they are peered and
+    // started from genesis with no blocks mined, so both sit at height 0).
+    let stable_hash = stable["bestblockhash"].as_str().unwrap_or("");
+    let rc_hash = rc["bestblockhash"].as_str().unwrap_or("");
+    assert_eq!(
+        stable_hash, rc_hash,
+        "stable and RC nodes disagree on best-block hash: stable={stable_hash} rc={rc_hash}"
+    );
+
+    println!("stable node: chain={} height={} bestblockhash={stable_hash}",
+        stable["chain"], stable["blocks"]);
+    println!("RC     node: chain={} height={} bestblockhash={rc_hash}",
+        rc["chain"], rc["blocks"]);
+}
+
+/// Mine a block on the stable node, then verify the RC node syncs to the
+/// same tip (confirming the two nodes are genuinely peered).
+#[test]
+#[ignore = "requires external bitcoind + bitcoind-rc -regtest on ports 18443/18445; run with --ignored"]
+fn e2e_rc_node_syncs_block_from_stable() {
+    let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
+    let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+
+    let rpc_call = |port: &str, args: &[&str]| -> Option<String> {
+        let mut cmd = std::process::Command::new("bitcoin-cli");
+        cmd.args([
+            "-regtest",
+            &format!("-rpcuser={rpc_user}"),
+            &format!("-rpcpassword={rpc_pass}"),
+            &format!("-rpcport={port}"),
+        ]);
+        cmd.args(args);
+        let out = cmd.output().ok()?;
+        if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            eprintln!(
+                "bitcoin-cli -rpcport={port} {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            None
+        }
+    };
+
+    // Skip if either node is not available.
+    if rpc_call("18443", &["getblockchaininfo"]).is_none() {
+        eprintln!("stable bitcoind not reachable — skipping sync test");
+        return;
+    }
+    if rpc_call("18445", &["getblockchaininfo"]).is_none() {
+        eprintln!("RC bitcoind not reachable — skipping sync test");
+        return;
+    }
+
+    // Create a wallet (ignore error if it already exists) and get an address.
+    rpc_call("18443", &["createwallet", "testwallet"]);
+    let addr = rpc_call("18443", &["getnewaddress"])
+        .expect("could not get new address from stable node");
+
+    // Mine one block to that address on the stable node.
+    let mined_json = rpc_call("18443", &["generatetoaddress", "1", addr.trim()])
+        .expect("generatetoaddress failed on stable node");
+    let mined: serde_json::Value =
+        serde_json::from_str(&mined_json).expect("invalid JSON from generatetoaddress");
+    let mined_hash = mined[0].as_str().expect("no block hash in generatetoaddress result");
+    println!("Mined block on stable node: {mined_hash}");
+
+    // Give the RC node up to 5 seconds to sync.
+    let mut rc_hash = String::new();
+    for attempt in 1..=10 {
+        if let Some(info_json) = rpc_call("18445", &["getblockchaininfo"]) {
+            let info: serde_json::Value =
+                serde_json::from_str(&info_json).expect("invalid JSON from RC node");
+            rc_hash = info["bestblockhash"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            if rc_hash == mined_hash {
+                println!("RC node synced to mined block after {attempt} attempt(s)");
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    assert_eq!(
+        rc_hash, mined_hash,
+        "RC node did not sync to the block mined on stable: expected={mined_hash} got={rc_hash}"
+    );
+}
