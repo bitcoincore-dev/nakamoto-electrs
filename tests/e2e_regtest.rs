@@ -246,6 +246,10 @@ fn e2e_rc_node_reachable_and_on_same_chain() {
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
     let stable_datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
     let rc_datadir = std::env::var("BITCOIND_RC_DATADIR").ok();
+    let Some(rc_datadir) = rc_datadir else {
+        eprintln!("BITCOIND_RC_DATADIR not set — skipping RC test");
+        return;
+    };
 
     // ── helper: call bitcoin-cli and return stdout, or None if unavailable ──
     let rpc_call = |port: &str, method: &str| -> Option<String> {
@@ -254,7 +258,7 @@ fn e2e_rc_node_reachable_and_on_same_chain() {
                 if port == "18443" {
                     stable_datadir.as_deref()
                 } else {
-                    rc_datadir.as_deref()
+                    Some(rc_datadir.as_str())
                 },
                 &rpc_user,
                 &rpc_pass,
@@ -330,6 +334,10 @@ fn e2e_rc_node_syncs_block_from_stable() {
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
     let stable_datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
     let rc_datadir = std::env::var("BITCOIND_RC_DATADIR").ok();
+    let Some(rc_datadir) = rc_datadir else {
+        eprintln!("BITCOIND_RC_DATADIR not set — skipping RC test");
+        return;
+    };
 
     let rpc_call = |port: &str, args: &[&str]| -> Option<String> {
         let mut cmd = std::process::Command::new("bitcoin-cli");
@@ -337,7 +345,7 @@ fn e2e_rc_node_syncs_block_from_stable() {
             if port == "18443" {
                 stable_datadir.as_deref()
             } else {
-                rc_datadir.as_deref()
+                Some(rc_datadir.as_str())
             },
             &rpc_user,
             &rpc_pass,

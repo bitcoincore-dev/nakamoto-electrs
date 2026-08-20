@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 VERBOSE=0
 BITCOIND_STABLE_DATADIR=""
+BITCOIND_RC_DATADIR=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --verbose)
@@ -25,10 +26,24 @@ EOF
     --datadir=*)
       BITCOIND_STABLE_DATADIR="${1#--datadir=}"
       ;;
+    --rc-datadir)
+      shift
+      if [ "$#" -eq 0 ]; then
+        cat >&2 <<EOF
+missing value for --rc-datadir
+usage: $0 [--verbose] [--datadir PATH] [--rc-datadir PATH]
+EOF
+        exit 1
+      fi
+      BITCOIND_RC_DATADIR="$1"
+      ;;
+    --rc-datadir=*)
+      BITCOIND_RC_DATADIR="${1#--rc-datadir=}"
+      ;;
     *)
       cat >&2 <<EOF
 unknown argument: $1
-usage: $0 [--verbose] [--datadir PATH]
+usage: $0 [--verbose] [--datadir PATH] [--rc-datadir PATH]
 
 # for the ignored regtest tests
 bitcoind -regtest -datadir="$ROOT_DIR/.bitcoin-regtest"
@@ -68,9 +83,11 @@ if [ -n "${BITCOIND_RC_DATADIR:-}" ]; then
 fi
 
 export BITCOIND_STABLE_DATADIR
-export BITCOIND_RC_DATADIR
 export BITCOIND_RPC_USER="$RPC_USER"
 export BITCOIND_RPC_PASS="$RPC_PASS"
+if [ -n "$BITCOIND_RC_DATADIR" ]; then
+  export BITCOIND_RC_DATADIR
+fi
 
 cleanup() {
   if [ -n "${BITCOIND_STARTED_BY_SCRIPT:-}" ] && [ -x "$(command -v bitcoin-cli)" ]; then
@@ -80,6 +97,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_for_regtest_rpc() {
+  local attempts=60
+  local i
+  for i in $(seq 1 "$attempts"); do
+    if bitcoin-cli -datadir="$BITCOIND_STABLE_DATADIR" -regtest \
+      -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport=18443 getblockchaininfo >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ "$VERBOSE" = "1" ] && [ $((i % 5)) -eq 0 ]; then
+      echo "waiting for local regtest bitcoind RPC... (${i}/${attempts})"
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 echo "Running ignored regtest e2e tests with BITCOIND_STABLE_DATADIR=$BITCOIND_STABLE_DATADIR"
 if [ -n "${BITCOIND_RC_DATADIR:-}" ]; then
   echo "Running ignored regtest e2e tests with BITCOIND_RC_DATADIR=$BITCOIND_RC_DATADIR"
@@ -87,6 +120,7 @@ fi
 
 if ! bitcoin-cli -datadir="$BITCOIND_STABLE_DATADIR" -regtest \
   -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport=18443 getblockchaininfo >/dev/null 2>&1; then
+  echo "starting local regtest bitcoind in $BITCOIND_STABLE_DATADIR"
   cat >"$BITCOIND_STABLE_DATADIR/bitcoin.conf" <<EOF
 [regtest]
 server=1
@@ -101,13 +135,13 @@ bind=127.0.0.1
 EOF
   bitcoind -regtest -datadir="$BITCOIND_STABLE_DATADIR"
   BITCOIND_STARTED_BY_SCRIPT=1
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    if bitcoin-cli -datadir="$BITCOIND_STABLE_DATADIR" -regtest \
-      -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport=18443 getblockchaininfo >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
+  if ! wait_for_regtest_rpc; then
+    cat >&2 <<EOF
+local regtest bitcoind did not become ready on 127.0.0.1:18443
+see $BITCOIND_STABLE_DATADIR/debug.log for details
+EOF
+    exit 1
+  fi
 fi
 
 cargo test --test e2e_regtest -- --ignored --nocapture
