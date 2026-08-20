@@ -4,10 +4,14 @@ version = "0.0.2"
 edition = "2024"
 default-run = "nakamoto-electrs"
 
-[[bin]]
+[[example]]
 name = "electrs"
-path = "src/bin/electrs.rs"
+path = "examples/electrs.rs"
 required-features = ["electrs-bin"]
+
+[[example]]
+name = "nakamoto"
+path = "examples/nakamoto.rs"
 
 [features]
 # Enable the standalone `electrs` binary (requires librocksdb at link time).
