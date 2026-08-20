@@ -38,14 +38,14 @@ use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use tracing::{debug, error, warn};
 
-use nakamoto_client::handle::Handle;
 use nakamoto_client::Event as NkEvent;
+use nakamoto_client::handle::Handle;
 // nakamoto's bitcoin (0.29) – used only here for the version bridge.
 use nakamoto_common::bitcoin::consensus::encode::serialize as nk_serialize;
 
 // Our crate's bitcoin (0.30)
-use bitcoin::{Block, BlockHash, blockdata::block::Header as BlockHeader, hashes::Hash};
 use bitcoin::consensus::deserialize as btc_deserialize;
+use bitcoin::{Block, BlockHash, blockdata::block::Header as BlockHeader, hashes::Hash};
 
 use crate::block_source::{BlockEvent, BlockSource};
 
@@ -78,9 +78,7 @@ fn conv_header(
         .context("failed to deserialise nakamoto header into bitcoin 0.30 BlockHeader")
 }
 
-fn conv_hash(
-    nk_hash: &nakamoto_common::bitcoin::hash_types::BlockHash,
-) -> Result<BlockHash> {
+fn conv_hash(nk_hash: &nakamoto_common::bitcoin::hash_types::BlockHash) -> Result<BlockHash> {
     // BlockHash is a newtype over a 32-byte array in both versions.
     let bytes: [u8; 32] = nk_hash
         .as_ref()
@@ -248,25 +246,21 @@ impl NakamotoBlockSource {
                                 debug!("Synced h={height} tip={tip}");
                                 // We need the hash of the tip; query the tree.
                                 let (result_tx, result_rx) = unbounded();
-                                if let Err(e) =
-                                    handle_ref.query_tree_erased(tip, result_tx)
-                                {
+                                if let Err(e) = handle_ref.query_tree_erased(tip, result_tx) {
                                     warn!("query_tree for Synced failed: {e}");
                                     continue;
                                 }
                                 match result_rx.recv() {
-                                    Ok(Some(nk_hdr)) => {
-                                        match conv_header(&nk_hdr) {
-                                            Ok(hdr) => broadcast(
-                                                &subs,
-                                                &BlockEvent::Synced {
-                                                    height: tip as u32,
-                                                    tip: hdr.block_hash(),
-                                                },
-                                            ),
-                                            Err(e) => error!("header conversion: {e:#}"),
-                                        }
-                                    }
+                                    Ok(Some(nk_hdr)) => match conv_header(&nk_hdr) {
+                                        Ok(hdr) => broadcast(
+                                            &subs,
+                                            &BlockEvent::Synced {
+                                                height: tip as u32,
+                                                tip: hdr.block_hash(),
+                                            },
+                                        ),
+                                        Err(e) => error!("header conversion: {e:#}"),
+                                    },
                                     Ok(None) => {
                                         warn!("tip header not found at height {tip}")
                                     }
@@ -317,7 +311,9 @@ impl BlockSource for NakamotoBlockSource {
         self.handle
             .query_tree_erased(height as u64, result_tx)
             .context("nakamoto query_tree failed")?;
-        let opt = result_rx.recv().context("query_tree result channel closed")?;
+        let opt = result_rx
+            .recv()
+            .context("query_tree result channel closed")?;
         match opt {
             None => Ok(None),
             Some(nk_hdr) => Ok(Some(conv_header(&nk_hdr)?)),

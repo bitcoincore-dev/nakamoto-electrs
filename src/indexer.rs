@@ -116,14 +116,8 @@ impl IndexState {
             for output in &tx.output {
                 let sh = ScriptHash::from_script(&output.script_pubkey);
                 let entry = TxEntry { txid, height };
-                self.history
-                    .entry(sh)
-                    .or_default()
-                    .push(entry);
-                self.by_height
-                    .entry(height)
-                    .or_default()
-                    .push((sh, txid));
+                self.history.entry(sh).or_default().push(entry);
+                self.by_height.entry(height).or_default().push((sh, txid));
             }
             // Also index spending inputs (skip coinbase).
             if !tx.is_coin_base() {
@@ -205,10 +199,7 @@ impl Indexer {
                                 s.apply_block(&block, height);
                             }
                             metrics.inc_blocks_indexed();
-                            info!(
-                                "indexed block h={height} txs={}",
-                                block.txdata.len()
-                            );
+                            info!("indexed block h={height} txs={}", block.txdata.len());
                         }
                         BlockEvent::Disconnected { hash, height } => {
                             warn!("indexer: rollback h={height} ({hash})");
@@ -243,7 +234,10 @@ impl Indexer {
 
     /// Return the current best-chain tip height known to the indexer.
     pub fn tip_height(&self) -> u32 {
-        self.state.read().expect("index read lock poisoned").tip_height
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .tip_height
     }
 
     /// Returns `true` when the given script hash has any history.
@@ -262,6 +256,7 @@ mod tests {
     use super::*;
     use bitcoin::hashes::Hash;
     use bitcoin::{
+        BlockHash, CompactTarget,
         absolute::LockTime,
         blockdata::{
             block::{Header as BlockHeader, Version},
@@ -269,8 +264,6 @@ mod tests {
             transaction::{Transaction, TxOut},
         },
         hash_types::TxMerkleNode,
-        CompactTarget,
-        BlockHash,
     };
 
     fn make_block(height: u32, scripts: Vec<Vec<u8>>) -> Block {
@@ -316,15 +309,13 @@ mod tests {
 
     #[test]
     fn apply_and_query_block() {
-        let metrics = Metrics::new();
+        let _metrics = Metrics::new();
         let mut state = IndexState::new();
         let script = p2pkh_script();
         let block = make_block(1, vec![script.clone()]);
         state.apply_block(&block, 1);
 
-        let sh = ScriptHash::from_script(
-            &Builder::from(script.clone()).into_script(),
-        );
+        let sh = ScriptHash::from_script(&Builder::from(script.clone()).into_script());
         assert!(state.history.contains_key(&sh));
         let entries = state.history[&sh].clone();
         assert_eq!(entries.len(), 1);
@@ -359,7 +350,10 @@ mod tests {
         state.rollback_height(1);
 
         let sh2 = ScriptHash::from_script(&Builder::from(s2).into_script());
-        assert!(state.history.contains_key(&sh2), "height-2 entry should survive");
+        assert!(
+            state.history.contains_key(&sh2),
+            "height-2 entry should survive"
+        );
     }
 
     #[test]

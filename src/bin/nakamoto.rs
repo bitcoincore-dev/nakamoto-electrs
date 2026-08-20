@@ -2,7 +2,6 @@
 ///
 /// Connects to the Bitcoin P2P network and syncs block headers and compact
 /// filters.  Useful for testing nakamoto independently of the Electrum bridge.
-
 use std::net::TcpStream;
 use std::thread;
 
