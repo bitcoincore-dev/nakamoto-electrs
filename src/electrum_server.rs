@@ -868,6 +868,108 @@ mod tests {
     }
 
     #[test]
+    fn block_header_and_headers_return_serialized_data() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+        use std::collections::BTreeMap;
+
+        #[derive(Clone)]
+        struct FakeSource {
+            headers: BTreeMap<u32, bitcoin::blockdata::block::Header>,
+        }
+
+        impl FakeSource {
+            fn header(height: u32) -> bitcoin::blockdata::block::Header {
+                bitcoin::blockdata::block::Header {
+                    version: bitcoin::blockdata::block::Version::ONE,
+                    prev_blockhash: bitcoin::BlockHash::all_zeros(),
+                    merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+                    time: height,
+                    bits: bitcoin::CompactTarget::from_consensus(0x1d00ffff),
+                    nonce: height,
+                }
+            }
+        }
+
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> {
+                crossbeam_channel::never()
+            }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                use bitcoin::hashes::Hash;
+                let height = self.headers.keys().next_back().copied().unwrap_or(0);
+                let header = self.headers.get(&height).copied().unwrap_or_else(|| Self::header(0));
+                Ok((height, header.block_hash()))
+            }
+            fn block_header(
+                &self,
+                h: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(self.headers.get(&h).copied())
+            }
+            fn block_by_hash(
+                &self,
+                _hash: &bitcoin::BlockHash,
+            ) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
+        }
+
+        let source = FakeSource {
+            headers: BTreeMap::from([(1, FakeSource::header(1)), (2, FakeSource::header(2))]),
+        };
+
+        let header = handle_block_header(&json!([1]), &source).expect("block header");
+        assert!(header.is_string());
+        assert_eq!(
+            header,
+            Value::String(serialize_hex(&FakeSource::header(1)))
+        );
+
+        let range = handle_block_headers(&json!([1, 2]), &source).expect("block headers");
+        assert_eq!(range["count"], json!(2));
+        assert_eq!(
+            range["hex"],
+            json!(format!(
+                "{}{}",
+                serialize_hex(&FakeSource::header(1)),
+                serialize_hex(&FakeSource::header(2))
+            ))
+        );
+    }
+
+    #[test]
+    fn block_header_missing_height_errors() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> {
+                crossbeam_channel::never()
+            }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                Ok((0, bitcoin::BlockHash::all_zeros()))
+            }
+            fn block_header(
+                &self,
+                _h: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(None)
+            }
+            fn block_by_hash(
+                &self,
+                _hash: &bitcoin::BlockHash,
+            ) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
+        }
+
+        let err = handle_block_header(&json!([0]), &FakeSource).expect_err("missing header");
+        assert!(err.contains("no header"));
+    }
+
+    #[test]
     fn compute_status_hash_uses_electrum_format() {
         let txid = "0".repeat(64).parse().unwrap();
         let history = vec![crate::indexer::TxEntry {
