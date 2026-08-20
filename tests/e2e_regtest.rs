@@ -66,10 +66,7 @@ impl BlockSource for StubSource {
         Ok(None)
     }
 
-    fn block_by_hash(
-        &self,
-        _hash: &bitcoin::BlockHash,
-    ) -> anyhow::Result<Option<bitcoin::Block>> {
+    fn block_by_hash(&self, _hash: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> {
         Ok(None)
     }
 }
@@ -82,8 +79,8 @@ fn start_electrum_server() -> SocketAddr {
 
     // Port 0 lets the OS pick a free port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let server = ElectrumServer::bind(addr, indexer, metrics)
-        .expect("failed to bind ElectrumServer");
+    let server =
+        ElectrumServer::bind(addr, indexer, metrics).expect("failed to bind ElectrumServer");
     let local_addr = server.local_addr();
 
     let source = Arc::new(StubSource);
@@ -152,7 +149,10 @@ fn e2e_headers_subscribe_returns_tip() {
     );
     let height = result["height"].as_u64().expect("height must be a number");
     // The stub source reports height 0 (no blocks synced).
-    assert_eq!(height, 0, "stub source should report height 0, got {height}");
+    assert_eq!(
+        height, 0,
+        "stub source should report height 0, got {height}"
+    );
 }
 
 /// Verify that `blockchain.scripthash.get_history` returns an empty array for
@@ -264,8 +264,7 @@ fn e2e_rc_node_reachable_and_on_same_chain() {
 
     let stable: serde_json::Value =
         serde_json::from_str(&stable_info).expect("invalid JSON from stable node");
-    let rc: serde_json::Value =
-        serde_json::from_str(&rc_info).expect("invalid JSON from RC node");
+    let rc: serde_json::Value = serde_json::from_str(&rc_info).expect("invalid JSON from RC node");
 
     // Both nodes must be on regtest.
     assert_eq!(
@@ -288,10 +287,14 @@ fn e2e_rc_node_reachable_and_on_same_chain() {
         "stable and RC nodes disagree on best-block hash: stable={stable_hash} rc={rc_hash}"
     );
 
-    println!("stable node: chain={} height={} bestblockhash={stable_hash}",
-        stable["chain"], stable["blocks"]);
-    println!("RC     node: chain={} height={} bestblockhash={rc_hash}",
-        rc["chain"], rc["blocks"]);
+    println!(
+        "stable node: chain={} height={} bestblockhash={stable_hash}",
+        stable["chain"], stable["blocks"]
+    );
+    println!(
+        "RC     node: chain={} height={} bestblockhash={rc_hash}",
+        rc["chain"], rc["blocks"]
+    );
 }
 
 /// Mine a block on the stable node, then verify the RC node syncs to the
@@ -336,15 +339,17 @@ fn e2e_rc_node_syncs_block_from_stable() {
 
     // Create a wallet (ignore error if it already exists) and get an address.
     rpc_call("18443", &["createwallet", "testwallet"]);
-    let addr = rpc_call("18443", &["getnewaddress"])
-        .expect("could not get new address from stable node");
+    let addr =
+        rpc_call("18443", &["getnewaddress"]).expect("could not get new address from stable node");
 
     // Mine one block to that address on the stable node.
     let mined_json = rpc_call("18443", &["generatetoaddress", "1", addr.trim()])
         .expect("generatetoaddress failed on stable node");
     let mined: serde_json::Value =
         serde_json::from_str(&mined_json).expect("invalid JSON from generatetoaddress");
-    let mined_hash = mined[0].as_str().expect("no block hash in generatetoaddress result");
+    let mined_hash = mined[0]
+        .as_str()
+        .expect("no block hash in generatetoaddress result");
     println!("Mined block on stable node: {mined_hash}");
 
     // Give the RC node up to 5 seconds to sync.
@@ -353,10 +358,7 @@ fn e2e_rc_node_syncs_block_from_stable() {
         if let Some(info_json) = rpc_call("18445", &["getblockchaininfo"]) {
             let info: serde_json::Value =
                 serde_json::from_str(&info_json).expect("invalid JSON from RC node");
-            rc_hash = info["bestblockhash"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            rc_hash = info["bestblockhash"].as_str().unwrap_or("").to_string();
             if rc_hash == mined_hash {
                 println!("RC node synced to mined block after {attempt} attempt(s)");
                 break;
