@@ -938,6 +938,16 @@ mod tests {
     }
 
     #[test]
+    fn pending_change_broadcaster_delivers_affected_scripts() {
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+        let sh = ScriptHash::from_raw_bytes([1u8; 32]);
+        broadcaster.broadcast(vec![sh]);
+        let received = rx.recv().expect("pending change");
+        assert_eq!(received, vec![sh]);
+    }
+
+    #[test]
     fn headers_subscribe_returns_current_tip_shape() {
         use crate::block_source::{BlockEvent, BlockSource};
         use crossbeam_channel::Receiver;
