@@ -1070,6 +1070,7 @@ dependencies = [
  "bitcoin 0.32.102",
  "clap",
  "crossbeam-channel",
+ "ctrlc",
  "electrs",
  "hex",
  "nakamoto-chain",

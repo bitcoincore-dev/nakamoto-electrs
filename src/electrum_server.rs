@@ -26,7 +26,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 use std::thread;
 use std::collections::HashMap;
 
@@ -131,19 +131,19 @@ impl ElectrumServer {
 
     /// Run the accept loop.  Blocks until the listener is closed or an
     /// unrecoverable error occurs.
-    pub fn run<S: BlockSource + Sync>(self, source: Arc<S>) -> Result<()> {
+    pub fn run<S: BlockSource + Sync>(self, source: Arc<S>, shutdown: Arc<AtomicBool>) -> Result<()> {
         let indexer = Arc::new(self.indexer);
         let metrics = Arc::new(self.metrics);
         let broadcaster = self.broadcaster.clone();
         let fee_rate = Arc::clone(&self.fee_rate);
+        self.listener
+            .set_nonblocking(true)
+            .context("failed to set Electrum listener nonblocking")?;
 
-        for stream in self.listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    let peer = stream
-                        .peer_addr()
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|_| "unknown".into());
+        while !shutdown.load(Ordering::Relaxed) {
+            match self.listener.accept() {
+                Ok((stream, peer_addr)) => {
+                    let peer = peer_addr.to_string();
                     info!("new Electrum connection from {peer}");
 
                     let indexer = Arc::clone(&indexer);
@@ -166,6 +166,10 @@ impl ElectrumServer {
                         })
                         .expect("failed to spawn electrum client thread");
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
                     error!("accept error: {e}");
                 }
