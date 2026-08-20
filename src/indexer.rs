@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::block_source::{BlockEvent, BlockSource};
 use crate::metrics::Metrics;
-use crate::store::{JournalActionKind, PersistentIndex, StoredUnspent};
+use crate::store::{JournalActionKind, PersistentIndex, StoredOutput, StoredUnspent};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,6 +77,8 @@ pub struct TxEntry {
 struct IndexState {
     history: HashMap<ScriptHash, Vec<TxEntry>>,
     by_height: HashMap<u32, Vec<BlockAction>>,
+    pending_txs: HashMap<Txid, Transaction>,
+    pending_outputs: HashMap<OutPoint, StoredOutput>,
     tip_height: u32,
     store: PersistentIndex,
 }
@@ -108,6 +110,8 @@ impl IndexState {
         let mut state = Self {
             history: HashMap::new(),
             by_height: HashMap::new(),
+            pending_txs: HashMap::new(),
+            pending_outputs: HashMap::new(),
             tip_height,
             store,
         };
@@ -158,10 +162,136 @@ impl IndexState {
         Ok(())
     }
 
+    fn rebuild_pending_view(&mut self) {
+        use std::collections::HashSet;
+
+        self.pending_outputs.clear();
+
+        let mut spent = HashSet::new();
+        for tx in self.pending_txs.values() {
+            for input in &tx.input {
+                let prevout = input.previous_output;
+                if !prevout.is_null() {
+                    spent.insert(prevout);
+                }
+            }
+        }
+
+        for tx in self.pending_txs.values() {
+            let txid = tx.compute_txid();
+            for (vout, output) in tx.output.iter().enumerate() {
+                let outpoint = OutPoint::new(txid, vout as u32);
+                if spent.contains(&outpoint) {
+                    continue;
+                }
+                self.pending_outputs.insert(
+                    outpoint,
+                    StoredOutput {
+                        script_hash: ScriptHash::from_script(&output.script_pubkey),
+                        txid,
+                        vout: vout as u32,
+                        value: output.value.to_sat(),
+                        height: 0,
+                    },
+                );
+            }
+        }
+    }
+
+    fn track_pending_transaction_internal(&mut self, tx: &Transaction) -> Result<()> {
+        let txid = tx.compute_txid();
+        self.store.store_tx(tx)?;
+        self.pending_txs.insert(txid, tx.clone());
+        self.rebuild_pending_view();
+        Ok(())
+    }
+
+    fn forget_pending_transaction(&mut self, txid: &Txid) {
+        self.pending_txs.remove(txid);
+        self.rebuild_pending_view();
+    }
+
+    fn pending_history_for_script(&self, sh: &ScriptHash) -> Vec<TxEntry> {
+        let mut out = Vec::new();
+
+        for tx in self.pending_txs.values() {
+            if self.pending_tx_touches_script(tx, sh) {
+                out.push(TxEntry {
+                    txid: tx.compute_txid(),
+                    height: 0,
+                    sequence: 0,
+                });
+            }
+        }
+
+        out
+    }
+
+    fn pending_tx_touches_script(&self, tx: &Transaction, sh: &ScriptHash) -> bool {
+        for input in &tx.input {
+            let prevout = input.previous_output;
+            if prevout.is_null() {
+                continue;
+            }
+            if let Some(script_hash) = self.script_hash_for_outpoint(&prevout).ok().flatten() {
+                if &script_hash == sh {
+                    return true;
+                }
+            }
+        }
+
+        tx.output
+            .iter()
+            .any(|output| &ScriptHash::from_script(&output.script_pubkey) == sh)
+    }
+
+    fn script_hash_for_outpoint(&self, outpoint: &OutPoint) -> Result<Option<ScriptHash>> {
+        if let Some(output) = self.pending_outputs.get(outpoint) {
+            return Ok(Some(output.script_hash));
+        }
+        Ok(self.store.load_output(outpoint)?.map(|output| output.script_hash))
+    }
+
+    fn unconfirmed_balance_delta_for_script(&self, sh: &ScriptHash) -> Result<i64> {
+        use std::collections::HashSet;
+
+        let mut delta: i64 = 0;
+        let mut seen_spends = HashSet::new();
+
+        for tx in self.pending_txs.values() {
+            for input in &tx.input {
+                let prevout = input.previous_output;
+                if prevout.is_null() || !seen_spends.insert(prevout) {
+                    continue;
+                }
+                if let Some(script_hash) = self.script_hash_for_outpoint(&prevout)? {
+                    if &script_hash == sh {
+                        let value = self
+                            .store
+                            .load_output(&prevout)?
+                            .or_else(|| self.pending_outputs.get(&prevout).copied())
+                            .map(|o| o.value)
+                            .unwrap_or(0);
+                        delta -= value as i64;
+                    }
+                }
+            }
+        }
+
+        for output in self.pending_outputs.values() {
+            if &output.script_hash == sh {
+                delta += output.value as i64;
+            }
+        }
+
+        Ok(delta)
+    }
+
     fn apply_block(&mut self, block: &Block, height: u32) -> Result<()> {
         let mut sequence = 0u32;
         for tx in &block.txdata {
             let txid = tx.compute_txid();
+            self.forget_pending_transaction(&txid);
             self.store.store_tx(tx)?;
             let tx_key = self.store.store_journal_action(
                 height,
@@ -341,7 +471,14 @@ impl IndexState {
 
     fn get_history(&self, sh: &ScriptHash) -> Vec<TxEntry> {
         let mut entries = self.history.get(sh).cloned().unwrap_or_default();
-        entries.sort_by_key(|e| (if e.height == 0 { u32::MAX } else { e.height }, e.sequence));
+        entries.extend(self.pending_history_for_script(sh));
+        entries.sort_by_key(|e| {
+            (
+                if e.height == 0 { u32::MAX } else { e.height },
+                e.sequence,
+                e.txid.to_string(),
+            )
+        });
         entries
     }
 
@@ -363,6 +500,10 @@ impl IndexState {
 
     fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.store.balance_for_script(sh)
+    }
+
+    fn get_unconfirmed_balance_delta(&self, sh: &ScriptHash) -> Result<i64> {
+        self.unconfirmed_balance_delta_for_script(sh)
     }
 
     fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
@@ -515,11 +656,25 @@ impl Indexer {
             .store_transaction(tx)
     }
 
+    pub fn track_pending_transaction(&self, tx: &Transaction) -> Result<()> {
+        self.state
+            .write()
+            .expect("index write lock poisoned")
+            .track_pending_transaction_internal(tx)
+    }
+
     pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.state
             .read()
             .expect("index read lock poisoned")
             .get_balance(sh)
+    }
+
+    pub fn get_unconfirmed_balance_delta(&self, sh: &ScriptHash) -> Result<i64> {
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .get_unconfirmed_balance_delta(sh)
     }
 
     pub fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {

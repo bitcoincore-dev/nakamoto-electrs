@@ -440,9 +440,12 @@ fn handle_scripthash_get_balance(
     let confirmed = indexer
         .get_balance(&sh)
         .map_err(|e| format!("balance lookup failed: {e:#}"))?;
+    let unconfirmed = indexer
+        .get_unconfirmed_balance_delta(&sh)
+        .map_err(|e| format!("balance lookup failed: {e:#}"))?;
     Ok(json!({
         "confirmed": confirmed,
-        "unconfirmed": 0
+        "unconfirmed": unconfirmed
     }))
 }
 
@@ -522,7 +525,7 @@ fn handle_transaction_broadcast(
                 .broadcast_transaction(tx.clone())
                 .map_err(|e| format!("broadcast failed: {e}"))?;
             indexer
-                .store_transaction(&tx)
+                .track_pending_transaction(&tx)
                 .map_err(|e| format!("failed to cache broadcast transaction: {e:#}"))?;
             Ok(Value::String(txid.to_string()))
         }

@@ -528,6 +528,44 @@ fn indexer_tracks_balance_and_spend_history() {
 }
 
 #[test]
+fn indexer_tracks_unconfirmed_pending_balance_and_history() {
+    let source = mock::MockBlockSource::new();
+    let indexer = make_indexer(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script_a = p2pkh_script();
+    let script_b = mock::op_return_script(0x44);
+    let block1 = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script_a.clone()]);
+    let fund_txid = block1.txdata[0].compute_txid();
+    let fund_outpoint = bitcoin::OutPoint::new(fund_txid, 0);
+
+    source.push(BlockEvent::Connected {
+        block: block1,
+        height: 1,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let pending = mock::make_spend_tx(fund_outpoint, vec![(900, script_b.clone())]);
+    indexer
+        .track_pending_transaction(&pending)
+        .expect("track pending tx");
+
+    let sh_a = sh_of(&script_a);
+    let sh_b = sh_of(&script_b);
+    assert_eq!(indexer.get_balance(&sh_a).unwrap(), 1000);
+    assert_eq!(indexer.get_unconfirmed_balance_delta(&sh_a).unwrap(), -1000);
+    assert_eq!(indexer.get_unconfirmed_balance_delta(&sh_b).unwrap(), 900);
+    assert!(indexer
+        .get_history(&sh_a)
+        .iter()
+        .any(|e| e.height == 0 && e.txid == pending.compute_txid()));
+    assert!(indexer
+        .get_history(&sh_b)
+        .iter()
+        .any(|e| e.height == 0 && e.txid == pending.compute_txid()));
+}
+
+#[test]
 fn indexer_persists_history_balance_and_utxos_across_restart() {
     let dir = tempdir().expect("temp index dir").keep();
     let script_a = p2pkh_script();

@@ -134,8 +134,8 @@ cargo test --test e2e_regtest -- --ignored
 
 ## Known limitations
 
-* **Confirmed-only balance** — UTXO tracking covers indexed chain blocks, but
-  unconfirmed/mempool balance is still not modeled.
+* **Partial mempool balance** — locally broadcast transactions are tracked as
+  pending, but full peer-observed mempool modeling is still incomplete.
 * **Persistent index** — history, raw transaction lookups, and confirmed UTXOs
   survive restarts via the embedded store.
 * **nakamoto is SPV** — nakamoto downloads compact block filters (BIP 157/158)
