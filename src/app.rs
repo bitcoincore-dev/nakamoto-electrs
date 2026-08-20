@@ -123,6 +123,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "electrs-bin")]
 pub fn run_electrs() -> Result<()> {
     electrs::run()
 }

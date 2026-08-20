@@ -126,6 +126,7 @@ pub struct Cli {
 pub enum Command {
     /// Run the standalone nakamoto SPV node.
     Nakamoto,
+    #[cfg(feature = "electrs-bin")]
     /// Run the standalone electrs binary backed by Bitcoin Core.
     Electrs,
 }
@@ -173,6 +174,7 @@ impl From<LevelArg> for Level {
 pub enum Mode {
     Bridge(Config),
     Nakamoto(NakamotoConfig),
+    #[cfg(feature = "electrs-bin")]
     Electrs,
 }
 
@@ -203,6 +205,7 @@ impl Cli {
 
         match self.command {
             Some(Command::Nakamoto) => Mode::Nakamoto(nakamoto),
+            #[cfg(feature = "electrs-bin")]
             Some(Command::Electrs) => Mode::Electrs,
             None => Mode::Bridge(bridge),
         }
