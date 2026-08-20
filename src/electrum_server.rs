@@ -834,6 +834,32 @@ mod tests {
     }
 
     #[test]
+    fn scripthash_get_balance_includes_pending_delta() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51]),
+            }],
+        };
+        indexer.track_pending_transaction(&tx).expect("track pending");
+        let sh = parse_scripthash(&json!([ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(vec![0x51])).to_hex()]))
+            .expect("script hash");
+        let resp = handle_scripthash_get_balance(&json!([sh.to_hex()]), &indexer).expect("balance");
+        assert_eq!(resp["confirmed"], json!(0));
+        assert_eq!(resp["unconfirmed"], json!(900));
+    }
+
+    #[test]
     fn headers_subscribe_returns_current_tip_shape() {
         use crate::block_source::{BlockEvent, BlockSource};
         use crossbeam_channel::Receiver;
