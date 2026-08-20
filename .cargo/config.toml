@@ -1,7 +1,3 @@
-[env]
-# Forces RocksDB to use the system library if available
-ROCKSDB_LIB_DIR = "/usr/local/lib"
-
 [build]
 rustc-wrapper = "sccache"
 
