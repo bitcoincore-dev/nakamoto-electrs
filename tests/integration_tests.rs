@@ -211,6 +211,7 @@ mod mock {
         hashes::Hash,
     };
     use crossbeam_channel::{Receiver, Sender, unbounded};
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     use nakamoto_electrs::block_source::{BlockEvent, BlockSource};
@@ -285,19 +286,29 @@ mod mock {
     /// A [`BlockSource`] that replays pre-built events from a channel.
     pub struct MockBlockSource {
         senders: Arc<Mutex<Vec<Sender<BlockEvent>>>>,
+        headers: Arc<Mutex<BTreeMap<u32, bitcoin::blockdata::block::Header>>>,
     }
 
     impl MockBlockSource {
         pub fn new() -> Self {
             Self {
                 senders: Arc::new(Mutex::new(Vec::new())),
+                headers: Arc::new(Mutex::new(BTreeMap::new())),
             }
         }
 
         /// Push an event to all current subscribers.
         pub fn push(&self, event: BlockEvent) {
+            if let BlockEvent::Connected { block, height } = &event {
+                self.headers.lock().unwrap().insert(*height, block.header);
+            }
             let mut guard = self.senders.lock().unwrap();
             guard.retain(|tx| tx.send(event.clone()).is_ok());
+        }
+
+        pub fn push_disconnected(&self, hash: bitcoin::BlockHash, height: u32) {
+            self.headers.lock().unwrap().remove(&height);
+            self.push(BlockEvent::Disconnected { hash, height });
         }
     }
 
@@ -309,11 +320,17 @@ mod mock {
         }
 
         fn tip(&self) -> Result<(u32, BlockHash)> {
-            Ok((0, BlockHash::all_zeros()))
+            let headers = self.headers.lock().unwrap();
+            let height = headers.keys().next_back().copied().unwrap_or(0);
+            let hash = headers
+                .get(&height)
+                .map(|header| header.block_hash())
+                .unwrap_or_else(BlockHash::all_zeros);
+            Ok((height, hash))
         }
 
-        fn block_header(&self, _h: u32) -> Result<Option<BlockHeader>> {
-            Ok(None)
+        fn block_header(&self, h: u32) -> Result<Option<BlockHeader>> {
+            Ok(self.headers.lock().unwrap().get(&h).copied())
         }
 
         fn block_by_hash(&self, _hash: &BlockHash) -> Result<Option<Block>> {
@@ -947,6 +964,135 @@ fn electrum_scripthash_queries_return_indexed_data() {
     assert_eq!(unspent["result"].as_array().unwrap().len(), 1);
     assert_eq!(unspent["result"][0]["height"], serde_json::json!(1));
     assert_eq!(unspent["result"][0]["value"], serde_json::json!(1000));
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+#[test]
+fn electrum_disconnect_reverts_headers_and_scripthash_state() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let script = p2pkh_script();
+    let sh = sh_of(&script);
+    let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
+    let block_hash = block.block_hash();
+    source.push(BlockEvent::Connected {
+        block,
+        height: 1,
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while indexer.get_history(&sh).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for indexed history"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let mut headers_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    headers_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut headers_reader = BufReader::new(headers_stream.try_clone().unwrap());
+    write!(
+        headers_stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.headers.subscribe","params":[]}}"#
+    )
+    .unwrap();
+    headers_stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    headers_reader.read_line(&mut line).unwrap();
+    let initial_headers: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(initial_headers["result"]["height"], serde_json::json!(1));
+
+    let mut sh_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    sh_stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut sh_reader = BufReader::new(sh_stream.try_clone().unwrap());
+    write!(
+        sh_stream,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.scripthash.subscribe","params":["{}"]}}"#,
+        sh.to_hex()
+    )
+    .unwrap();
+    sh_stream.write_all(b"\n").unwrap();
+
+    line.clear();
+    sh_reader.read_line(&mut line).unwrap();
+    let initial_sh: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(initial_sh["result"].is_string());
+
+    source.push_disconnected(block_hash, 1);
+
+    while !indexer.get_history(&sh).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for rollback"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    line.clear();
+    while line.is_empty() {
+        match headers_reader.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for headers disconnect notification"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read headers disconnect notification: {err}"),
+        }
+    }
+    let headers_msg: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(headers_msg["method"], "blockchain.headers.subscribe");
+    assert_eq!(headers_msg["params"][0]["height"], serde_json::json!(0));
+
+    line.clear();
+    while line.is_empty() {
+        match sh_reader.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for scripthash disconnect notification"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read scripthash disconnect notification: {err}"),
+        }
+    }
+    let sh_msg: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(sh_msg["method"], "blockchain.scripthash.subscribe");
+    assert_eq!(sh_msg["params"][0], serde_json::json!(sh.to_hex()));
+    assert!(sh_msg["params"][1].is_null());
 
     shutdown.store(true, Ordering::SeqCst);
 }
