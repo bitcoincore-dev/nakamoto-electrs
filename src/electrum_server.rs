@@ -509,8 +509,8 @@ fn handle_headers_subscribe<S: BlockSource>(
     source: &S,
 ) -> std::result::Result<Value, String> {
     state.headers_subscribed = true;
-    let current = current_header_status(indexer, source)
-        .map_err(|e| format!("block_header error: {e}"))?;
+    let current =
+        current_header_status(indexer, source).map_err(|e| format!("block_header error: {e}"))?;
     state.header_subscription = current.clone();
     Ok(match current {
         Some((height, hex)) => json!({"height": height, "hex": hex}),
@@ -755,7 +755,9 @@ fn wait_for_indexer_tip(indexer: &Indexer, source_event: &crate::block_source::B
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let ready = match source_event {
-            crate::block_source::BlockEvent::Connected { height, .. } => indexer.tip_height() >= *height,
+            crate::block_source::BlockEvent::Connected { height, .. } => {
+                indexer.tip_height() >= *height
+            }
             crate::block_source::BlockEvent::Disconnected { height, .. } => {
                 indexer.tip_height() < *height
             }
