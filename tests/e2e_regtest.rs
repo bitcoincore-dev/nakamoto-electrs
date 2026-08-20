@@ -28,6 +28,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
@@ -88,11 +89,12 @@ fn start_electrum_server() -> SocketAddr {
     let local_addr = server.local_addr();
 
     let source = Arc::new(StubSource);
+    let shutdown = Arc::new(AtomicBool::new(false));
     thread::Builder::new()
         .name("electrum-server-test".into())
         .spawn(move || {
             // Errors here are expected when the test drops the connection.
-            let _ = server.run(source);
+            let _ = server.run(source, shutdown);
         })
         .expect("failed to spawn server thread");
 

@@ -31,7 +31,7 @@
 //! corresponding receiver.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -168,7 +168,7 @@ impl NakamotoBlockSource {
     ///
     /// Background threads are started immediately.  The returned value is
     /// cheap to clone and share across threads.
-    pub fn new<H: Handle + 'static>(handle: H) -> Self {
+    pub fn new<H: Handle + 'static>(handle: H, shutdown: Arc<AtomicBool>) -> Self {
         let subscribers: Subscribers = Arc::new(Mutex::new(Vec::new()));
         let block_cache: Arc<Mutex<HashMap<BlockHash, Block>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -182,11 +182,13 @@ impl NakamotoBlockSource {
         {
             let subs = Arc::clone(&subscribers);
             let cache = Arc::clone(&block_cache);
+            let shutdown = Arc::clone(&shutdown);
             thread::Builder::new()
                 .name("nk-blocks".into())
                 .spawn(move || {
-                    for (nk_block, height) in &blocks_rx {
-                        match conv_block(&nk_block) {
+                    while !shutdown.load(Ordering::Relaxed) {
+                        match blocks_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                            Ok((nk_block, height)) => match conv_block(&nk_block) {
                             Ok(block) => {
                                 let hash = block.block_hash();
                                 debug!("nakamoto delivered full block {} h={}", hash, height);
@@ -203,6 +205,9 @@ impl NakamotoBlockSource {
                                 );
                             }
                             Err(e) => error!("block conversion failed: {e:#}"),
+                            },
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                         }
                     }
                     debug!("nk-blocks thread exiting");
@@ -214,20 +219,22 @@ impl NakamotoBlockSource {
         {
             let subs = Arc::clone(&subscribers);
             let handle_ref = Arc::clone(&erased);
+            let shutdown = Arc::clone(&shutdown);
             thread::Builder::new()
                 .name("nk-events".into())
                 .spawn(move || {
-                    for event in &events_rx {
-                        match event {
-                            NkEvent::BlockConnected { hash, height, .. } => {
+                    while !shutdown.load(Ordering::Relaxed) {
+                        match events_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                            Ok(event) => match event {
+                                NkEvent::BlockConnected { hash, height, .. } => {
                                 debug!("BlockConnected h={height} {hash}");
                                 // Ask nakamoto to download the full block.  It
                                 // will be delivered to `blocks_rx` handled above.
                                 if let Err(e) = handle_ref.get_block_erased(&hash) {
                                     warn!("get_block({hash}) failed: {e}");
                                 }
-                            }
-                            NkEvent::BlockDisconnected { hash, height, .. } => {
+                                }
+                                NkEvent::BlockDisconnected { hash, height, .. } => {
                                 debug!("BlockDisconnected h={height} {hash}");
                                 match conv_hash(&hash) {
                                     Ok(bh) => broadcast(
@@ -239,8 +246,8 @@ impl NakamotoBlockSource {
                                     ),
                                     Err(e) => error!("hash conversion failed: {e:#}"),
                                 }
-                            }
-                            NkEvent::Synced { height, tip } => {
+                                }
+                                NkEvent::Synced { height, tip } => {
                                 // nakamoto's Synced reports filter-sync progress; use
                                 // `tip` as the best-chain height.
                                 debug!("Synced h={height} tip={tip}");
@@ -266,8 +273,11 @@ impl NakamotoBlockSource {
                                     }
                                     Err(_) => warn!("query_tree result channel closed"),
                                 }
-                            }
-                            _ => {}
+                                }
+                                _ => {}
+                            },
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                         }
                     }
                     debug!("nk-events thread exiting");
