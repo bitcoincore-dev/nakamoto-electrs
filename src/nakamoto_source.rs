@@ -345,11 +345,8 @@ impl BlockSource for NakamotoBlockSource {
 mod tests {
     use super::*;
     use crossbeam_channel::{Receiver, Sender, unbounded};
-    use nakamoto_common::block::{
-        tree::BlockReader,
-        Block as NkBlock, BlockHash as NkBlockHash, BlockHeader, Height,
-    };
     use nakamoto_common::bitcoin::{
+        OutPoint, Script, Sequence, Witness,
         blockdata::{
             locktime::PackedLockTime,
             script::Builder,
@@ -357,7 +354,9 @@ mod tests {
         },
         hash_types::TxMerkleNode,
         hashes::Hash,
-        OutPoint, Script, Sequence, Witness,
+    };
+    use nakamoto_common::block::{
+        Block as NkBlock, BlockHash as NkBlockHash, BlockHeader, Height, tree::BlockReader,
     };
     use std::collections::BTreeMap;
     use std::sync::{
@@ -402,10 +401,7 @@ mod tests {
 
         fn tip(&self) -> (NkBlockHash, BlockHeader) {
             let height = self.height();
-            let header = *self
-                .headers
-                .get(&height)
-                .expect("fake tree needs tip");
+            let header = *self.headers.get(&height).expect("fake tree needs tip");
             (header.block_hash(), header)
         }
 
@@ -418,7 +414,9 @@ mod tests {
         }
 
         fn is_known(&self, hash: &NkBlockHash) -> bool {
-            self.headers.values().any(|header| header.block_hash() == *hash)
+            self.headers
+                .values()
+                .any(|header| header.block_hash() == *hash)
         }
 
         fn contains(&self, hash: &NkBlockHash) -> bool {
@@ -484,10 +482,7 @@ mod tests {
             Ok((height, header))
         }
 
-        fn get_block(
-            &self,
-            hash: &NkBlockHash,
-        ) -> Result<(), nakamoto_client::handle::Error> {
+        fn get_block(&self, hash: &NkBlockHash) -> Result<(), nakamoto_client::handle::Error> {
             self.requested_blocks.lock().unwrap().push(*hash);
             Ok(())
         }
@@ -504,10 +499,7 @@ mod tests {
             &self,
             _to: &NkBlockHash,
         ) -> Result<
-            Option<(
-                u64,
-                nakamoto_common::nonempty::NonEmpty<BlockHeader>,
-            )>,
+            Option<(u64, nakamoto_common::nonempty::NonEmpty<BlockHeader>)>,
             nakamoto_client::handle::Error,
         > {
             Ok(None)
@@ -571,16 +563,20 @@ mod tests {
         fn submit_transaction(
             &self,
             _tx: nakamoto_common::bitcoin::Transaction,
-        ) -> Result<nakamoto_common::nonempty::NonEmpty<std::net::SocketAddr>, nakamoto_client::handle::Error>
-        {
+        ) -> Result<
+            nakamoto_common::nonempty::NonEmpty<std::net::SocketAddr>,
+            nakamoto_client::handle::Error,
+        > {
             unreachable!()
         }
 
         fn import_headers(
             &self,
             _headers: Vec<BlockHeader>,
-        ) -> Result<Result<nakamoto_common::block::tree::ImportResult, nakamoto_common::block::tree::Error>, nakamoto_client::handle::Error>
-        {
+        ) -> Result<
+            Result<nakamoto_common::block::tree::ImportResult, nakamoto_common::block::tree::Error>,
+            nakamoto_client::handle::Error,
+        > {
             unreachable!()
         }
 
@@ -620,7 +616,10 @@ mod tests {
             unreachable!()
         }
 
-        fn wait_for_height(&self, _h: Height) -> Result<NkBlockHash, nakamoto_client::handle::Error> {
+        fn wait_for_height(
+            &self,
+            _h: Height,
+        ) -> Result<NkBlockHash, nakamoto_client::handle::Error> {
             unreachable!()
         }
 
@@ -713,15 +712,15 @@ mod tests {
         let rx = source.subscribe();
 
         events_tx
-            .send(NkEvent::Synced {
-                height: 7,
-                tip: 7,
-            })
+            .send(NkEvent::Synced { height: 7, tip: 7 })
             .unwrap();
         match rx.recv_timeout(Duration::from_secs(1)).expect("synced") {
             BlockEvent::Synced { height, tip } => {
                 assert_eq!(height, 7);
-                assert_eq!(tip, conv_hash(&make_header(7).block_hash()).expect("tip hash"));
+                assert_eq!(
+                    tip,
+                    conv_hash(&make_header(7).block_hash()).expect("tip hash")
+                );
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -740,7 +739,10 @@ mod tests {
 
         assert_eq!(
             source.tip().unwrap(),
-            (3, conv_hash(&make_header(3).block_hash()).expect("tip hash"))
+            (
+                3,
+                conv_hash(&make_header(3).block_hash()).expect("tip hash")
+            )
         );
         assert_eq!(
             source.block_header(3).unwrap(),
