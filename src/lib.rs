@@ -1,3 +1,18 @@
+// ---------------------------------------------------------------------------
+// Modules
+// ---------------------------------------------------------------------------
+
+pub mod block_source;
+pub mod config;
+pub mod electrum_server;
+pub mod indexer;
+pub mod metrics;
+pub mod nakamoto_source;
+
+// ---------------------------------------------------------------------------
+// Utility functions (used by tests and downstream)
+// ---------------------------------------------------------------------------
+
 /// Adds two `u64` values, panicking on overflow in debug builds.
 /// For wrapping or saturating behaviour use the standard library primitives
 /// (`u64::wrapping_add`, `u64::saturating_add`) directly.

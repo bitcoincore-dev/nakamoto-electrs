@@ -1,0 +1,144 @@
+name: E2E Regtest
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: ""
+  BITCOIND_RPC_URL: "http://127.0.0.1:18443"
+  BITCOIND_RPC_USER: "user"
+  BITCOIND_RPC_PASS: "passw0rd"
+
+jobs:
+  e2e-regtest:
+    name: E2E Regtest Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Cargo registry & build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-e2e-
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt (warn only)
+        run: cargo fmt -- --check
+        continue-on-error: true
+
+      # ---------------------------------------------------------------------------
+      # Detect and install the latest Bitcoin Core prebuilt binaries
+      # ---------------------------------------------------------------------------
+      - name: Detect latest Bitcoin Core release
+        id: btc_version
+        run: |
+          # Fetch the latest release tag from the Bitcoin Core GitHub API
+          VERSION=$(curl -fsSL \
+            "https://api.github.com/repos/bitcoin/bitcoin/releases/latest" \
+            | grep '"tag_name"' \
+            | sed -E 's/.*"v([^"]+)".*/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Bitcoin Core version: ${VERSION}"
+
+      - name: Download and install Bitcoin Core binaries
+        run: |
+          VERSION="${{ steps.btc_version.outputs.version }}"
+          ARCH="x86_64-linux-gnu"
+          TARBALL="bitcoin-${VERSION}-${ARCH}.tar.gz"
+          BASE_URL="https://bitcoincore.org/bin/bitcoin-core-${VERSION}"
+
+          echo "Downloading ${BASE_URL}/${TARBALL}"
+          curl -fsSL -O "${BASE_URL}/${TARBALL}"
+          curl -fsSL -O "${BASE_URL}/SHA256SUMS"
+          curl -fsSL -O "${BASE_URL}/SHA256SUMS.asc" || true   # gpg check is optional in CI
+
+          # Verify checksum
+          grep "${TARBALL}" SHA256SUMS | sha256sum --check --status
+
+          tar -xzf "${TARBALL}"
+          sudo install -m 0755 -t /usr/local/bin \
+            "bitcoin-${VERSION}/bin/bitcoind" \
+            "bitcoin-${VERSION}/bin/bitcoin-cli"
+
+          bitcoind --version
+
+      # ---------------------------------------------------------------------------
+      # Configure and start bitcoind in regtest mode
+      # ---------------------------------------------------------------------------
+      - name: Configure and start bitcoind (regtest)
+        run: |
+          mkdir -p "$HOME/.bitcoin"
+          cat > "$HOME/.bitcoin/bitcoin.conf" <<'EOF'
+[regtest]
+server=1
+daemon=1
+txindex=1
+fallbackfee=0.0001
+EOF
+
+          bitcoind -regtest \
+            -rpcuser="${BITCOIND_RPC_USER}" \
+            -rpcpassword="${BITCOIND_RPC_PASS}" \
+            -rpcport=18443
+
+          # Wait until the RPC is ready
+          for i in $(seq 1 30); do
+            if bitcoin-cli -regtest \
+                -rpcuser="${BITCOIND_RPC_USER}" \
+                -rpcpassword="${BITCOIND_RPC_PASS}" \
+                -rpcport=18443 \
+                getblockchaininfo > /dev/null 2>&1; then
+              echo "bitcoind is ready (attempt ${i})"
+              break
+            fi
+            echo "Waiting for bitcoind... (attempt ${i}/30)"
+            sleep 1
+          done
+
+          bitcoin-cli -regtest \
+            -rpcuser="${BITCOIND_RPC_USER}" \
+            -rpcpassword="${BITCOIND_RPC_PASS}" \
+            -rpcport=18443 \
+            getblockchaininfo
+
+      # ---------------------------------------------------------------------------
+      # Build the project and run the ignored e2e tests
+      # ---------------------------------------------------------------------------
+      - name: cargo build
+        run: cargo build --all-targets
+
+      - name: Run ignored e2e regtest tests
+        run: |
+          cargo test --test e2e_regtest -- --ignored
+        env:
+          BITCOIND_RPC_URL: ${{ env.BITCOIND_RPC_URL }}
+          BITCOIND_RPC_USER: ${{ env.BITCOIND_RPC_USER }}
+          BITCOIND_RPC_PASS: ${{ env.BITCOIND_RPC_PASS }}
+
+      # ---------------------------------------------------------------------------
+      # Cleanup
+      # ---------------------------------------------------------------------------
+      - name: Stop bitcoind
+        if: always()
+        run: |
+          bitcoin-cli -regtest \
+            -rpcuser="${BITCOIND_RPC_USER}" \
+            -rpcpassword="${BITCOIND_RPC_PASS}" \
+            -rpcport=18443 \
+            stop || true
