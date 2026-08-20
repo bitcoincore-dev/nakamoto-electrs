@@ -1,5 +1,5 @@
 //! [`NakamotoBlockSource`] — bridges a running nakamoto light-client node to
-//! the [`BlockSource`] abstraction used by the indexer.
+//! the [`BlockSource`] abstraction used by the indexer and Electrum server.
 //!
 //! ## Design
 //!
@@ -12,6 +12,18 @@
 //! 0.30 decoder.  Because both versions encode the same on-wire format this is
 //! lossless.
 //!
+//! ## Interface semantics
+//!
+//! * `tip()` returns the current best-chain height and tip hash from the
+//!   nakamoto tree.
+//! * `block_header(height)` queries the nakamoto tree directly and returns a
+//!   decoded 0.30 header when that height is known.
+//! * `block_by_hash(hash)` serves only from the local cache of full blocks that
+//!   nakamoto has already downloaded.
+//!
+//! The bridge does not fabricate blocks: a `block_by_hash` miss simply means
+//! nakamoto has not downloaded that block yet.
+//!
 //! ## Event threading model
 //!
 //! Construction spawns two background threads:
@@ -19,7 +31,7 @@
 //! 1. **event thread** — drains `handle.events()`.  On `BlockConnected` it
 //!    calls `handle.get_block(hash)` to queue a full-block download.  On
 //!    `BlockDisconnected` it emits a `BlockEvent::Disconnected`.  On `Synced`
-//!    it emits `BlockEvent::Synced`.
+//!    it resolves the tip header and emits `BlockEvent::Synced`.
 //!
 //! 2. **blocks thread** — drains `handle.blocks()`.  Every full block that
 //!    nakamoto downloads (in response to `get_block` calls queued by thread 1)
