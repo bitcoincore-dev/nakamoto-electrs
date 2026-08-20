@@ -122,7 +122,12 @@ fn electrum_call(addr: SocketAddr, request: &str) -> serde_json::Value {
     serde_json::from_str(line.trim()).expect("invalid JSON response")
 }
 
-fn bitcoin_cli_base_args(datadir: Option<&str>, rpc_user: &str, rpc_pass: &str, port: &str) -> Vec<String> {
+fn bitcoin_cli_base_args(
+    datadir: Option<&str>,
+    rpc_user: &str,
+    rpc_pass: &str,
+    port: &str,
+) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(datadir) = datadir {
         args.push(format!("-datadir={datadir}"));
