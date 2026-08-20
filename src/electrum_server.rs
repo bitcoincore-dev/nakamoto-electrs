@@ -509,12 +509,13 @@ fn handle_headers_subscribe<S: BlockSource>(
     source: &S,
 ) -> std::result::Result<Value, String> {
     state.headers_subscribed = true;
-    current_header_status(indexer, source)
-        .map(|opt| match opt {
-            Some((height, hex)) => json!({"height": height, "hex": hex}),
-            None => json!({"height": 0, "hex": ""}),
-        })
-        .map_err(|e| format!("block_header error: {e}"))
+    let current = current_header_status(indexer, source)
+        .map_err(|e| format!("block_header error: {e}"))?;
+    state.header_subscription = current.clone();
+    Ok(match current {
+        Some((height, hex)) => json!({"height": height, "hex": hex}),
+        None => json!({"height": 0, "hex": ""}),
+    })
 }
 
 fn handle_scripthash_get_history(
