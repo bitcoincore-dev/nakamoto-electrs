@@ -716,17 +716,11 @@ impl Indexer {
     }
 
     pub fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
-        let mut out = self
-            .state
-            .read()
-            .expect("index read lock poisoned")
-            .list_unspent(sh)?;
-        out.extend(
-            self.state
-                .read()
-                .expect("index read lock poisoned")
-                .pending_unspent_for_script(sh),
-        );
+        let state = self.state.read().expect("index read lock poisoned");
+        let mut out = state.list_unspent(sh)?;
+        out.extend(state.pending_unspent_for_script(sh));
+        out.sort_by_key(|e| (e.height, e.txid.to_string(), e.vout));
+        out.dedup_by_key(|e| (e.txid, e.vout));
         Ok(out)
     }
 }

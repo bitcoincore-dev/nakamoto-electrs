@@ -566,6 +566,34 @@ fn indexer_tracks_unconfirmed_pending_balance_and_history() {
 }
 
 #[test]
+fn indexer_listunspent_is_stable_and_deduped() {
+    let source = mock::MockBlockSource::new();
+    let indexer = make_indexer(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script = p2pkh_script();
+    let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
+    let txid = block.txdata[0].compute_txid();
+    let outpoint = bitcoin::OutPoint::new(txid, 0);
+    source.push(BlockEvent::Connected {
+        block: block.clone(),
+        height: 1,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let pending = mock::make_spend_tx(outpoint, vec![(900, mock::op_return_script(0x55))]);
+    indexer
+        .track_pending_transaction(&pending)
+        .expect("track pending");
+
+    let sh = sh_of(&script);
+    let unspent = indexer.list_unspent(&sh).unwrap();
+    assert_eq!(unspent.len(), 1);
+    assert_eq!(unspent[0].height, 1);
+    assert_eq!(unspent[0].txid, txid);
+}
+
+#[test]
 fn indexer_persists_history_balance_and_utxos_across_restart() {
     let dir = tempdir().expect("temp index dir").keep();
     let script_a = p2pkh_script();
