@@ -183,9 +183,7 @@ impl Cli {
         let listen = self
             .listen
             .unwrap_or_else(|| default_electrum_addr(network));
-        let index_dir = self
-            .data_dir
-            .unwrap_or_else(|| default_index_dir(&network));
+        let index_dir = self.data_dir.unwrap_or_else(|| default_index_dir(&network));
 
         let bridge = Config {
             network,
