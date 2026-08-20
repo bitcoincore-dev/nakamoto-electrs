@@ -270,12 +270,12 @@ mod tests {
         let txouts: Vec<TxOut> = scripts
             .into_iter()
             .map(|s| TxOut {
-                value: 1000u64,
+                value: bitcoin::Amount::from_sat(1000),
                 script_pubkey: Builder::from(s).into_script(),
             })
             .collect();
         let tx = Transaction {
-            version: 1i32,
+            version: bitcoin::transaction::Version::non_standard(1),
             lock_time: LockTime::ZERO,
             input: vec![bitcoin::blockdata::transaction::TxIn {
                 previous_output: bitcoin::OutPoint::null(),

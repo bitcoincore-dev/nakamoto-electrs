@@ -73,6 +73,13 @@ Options:
 | `--peer <addr>` | *(DNS seeds)* | Explicit nakamoto peer (repeatable) |
 | `--log <level>` | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
 
+### Subcommands
+
+```sh
+cargo run -- nakamoto [OPTIONS]
+cargo run -- electrs
+```
+
 ### Examples
 
 ```sh
@@ -85,11 +92,11 @@ cargo run -- --network signet --listen 0.0.0.0:60601 --data-dir /data/nakamoto-s
 # Regtest with an explicit local peer
 cargo run -- --network regtest --peer 127.0.0.1:18444
 
-# Standalone nakamoto node (no Electrum server)
-cargo run --bin nakamoto
+# Standalone nakamoto node with custom signet peers
+cargo run -- nakamoto --network signet --peer 127.0.0.1:38333
 
 # Standalone electrs backed by a local Bitcoin Core node
-cargo run --bin electrs
+cargo run -- electrs
 ```
 
 ## Connect a wallet
@@ -137,4 +144,3 @@ cargo test --test e2e_regtest -- --ignored
   and fetches full blocks only for matching filters.  This means the indexer
   only sees blocks that match watched scripts.  Watching all scripts requires
   downloading all blocks.
-

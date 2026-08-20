@@ -1,17 +1,15 @@
-//! Unified runtime configuration for nakamoto-electrs.
-//!
-//! A [`Config`] can be built programmatically (useful in tests) or parsed from
-//! command-line arguments via [`Config::from_args`].
+//! Unified runtime configuration and CLI parsing for nakamoto-electrs.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use clap::{Parser, Subcommand, ValueEnum};
 use tracing::Level;
 
 use crate::Network;
 
 // ---------------------------------------------------------------------------
-// Config
+// Runtime configs
 // ---------------------------------------------------------------------------
 
 /// Runtime configuration for the nakamoto-electrs bridge.
@@ -23,7 +21,7 @@ pub struct Config {
     /// Address on which the Electrum JSON-RPC server will listen.
     pub electrum_listen_addr: SocketAddr,
 
-    /// Optional list of seed peers for nakamoto.  When empty nakamoto will use
+    /// Optional list of seed peers for nakamoto. When empty nakamoto will use
     /// its built-in DNS seeds.
     pub nakamoto_peers: Vec<SocketAddr>,
 
@@ -35,8 +33,25 @@ pub struct Config {
     pub log_level: Level,
 
     /// Maximum number of chain reorganisation blocks to handle when rolling
-    /// back the index.  Defaults to [`DEFAULT_REORG_DEPTH`].
+    /// back the index. Defaults to [`DEFAULT_REORG_DEPTH`].
     pub max_reorg_depth: u32,
+}
+
+/// Runtime configuration for the standalone nakamoto node.
+#[derive(Debug, Clone)]
+pub struct NakamotoConfig {
+    /// Bitcoin network to operate on.
+    pub network: Network,
+
+    /// Optional list of seed peers for nakamoto. When empty nakamoto will use
+    /// its built-in DNS seeds.
+    pub nakamoto_peers: Vec<SocketAddr>,
+
+    /// Directory where nakamoto stores its block-header and filter caches.
+    pub index_dir: PathBuf,
+
+    /// Maximum log verbosity level.
+    pub log_level: Level,
 }
 
 /// Sensible default maximum reorg depth for safety.
@@ -57,108 +72,148 @@ impl Config {
             max_reorg_depth: DEFAULT_REORG_DEPTH,
         }
     }
+}
 
-    /// Parse configuration from `std::env::args`.
-    ///
-    /// Supports the following flags (all optional):
-    ///
-    /// ```text
-    /// --network  <mainnet|testnet|signet|regtest>  (default: testnet)
-    /// --listen   <ip:port>                          (default: 127.0.0.1:<network-port>)
-    /// --data-dir <path>                             (default: ~/.nakamoto-electrs/<network>)
-    /// --peer     <ip:port>                          (repeatable)
-    /// --log      <error|warn|info|debug|trace>      (default: info)
-    /// ```
-    pub fn from_args() -> Self {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        let mut cfg = Config::new(Network::Testnet);
-
-        let mut i = 0usize;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--network" | "-n" => {
-                    if let Some(val) = args.get(i + 1) {
-                        if let Some(net) = Network::from_str(val) {
-                            cfg = Config::new(net);
-                        } else {
-                            eprintln!("warn: unknown network '{val}', using testnet");
-                        }
-                        i += 2;
-                    } else {
-                        eprintln!("warn: --network requires a value");
-                        i += 1;
-                    }
-                }
-                "--listen" | "-l" => {
-                    if let Some(val) = args.get(i + 1) {
-                        match val.parse::<SocketAddr>() {
-                            Ok(addr) => cfg.electrum_listen_addr = addr,
-                            Err(e) => eprintln!("warn: invalid --listen '{val}': {e}"),
-                        }
-                        i += 2;
-                    } else {
-                        eprintln!("warn: --listen requires a value");
-                        i += 1;
-                    }
-                }
-                "--data-dir" | "-d" => {
-                    if let Some(val) = args.get(i + 1) {
-                        cfg.index_dir = PathBuf::from(val);
-                        i += 2;
-                    } else {
-                        eprintln!("warn: --data-dir requires a value");
-                        i += 1;
-                    }
-                }
-                "--peer" | "-p" => {
-                    if let Some(val) = args.get(i + 1) {
-                        match val.parse::<SocketAddr>() {
-                            Ok(addr) => cfg.nakamoto_peers.push(addr),
-                            Err(e) => eprintln!("warn: invalid --peer '{val}': {e}"),
-                        }
-                        i += 2;
-                    } else {
-                        eprintln!("warn: --peer requires a value");
-                        i += 1;
-                    }
-                }
-                "--log" => {
-                    if let Some(val) = args.get(i + 1) {
-                        cfg.log_level = parse_level(val);
-                        i += 2;
-                    } else {
-                        eprintln!("warn: --log requires a value");
-                        i += 1;
-                    }
-                }
-                unknown => {
-                    eprintln!("warn: unknown flag '{unknown}'");
-                    i += 1;
-                }
-            }
+impl NakamotoConfig {
+    /// Create a standalone nakamoto config with defaults for the given network.
+    pub fn new(network: Network) -> Self {
+        Self {
+            network,
+            nakamoto_peers: Vec::new(),
+            index_dir: default_index_dir(&network),
+            log_level: Level::INFO,
         }
+    }
+}
 
-        cfg
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Parser)]
+#[command(name = "nakamoto-electrs", version, about)]
+pub struct Cli {
+    /// Bitcoin network to operate on.
+    #[arg(long, short = 'n', global = true, value_enum, default_value_t = NetworkArg::Testnet)]
+    pub network: NetworkArg,
+
+    /// Electrum listener address for the bridge mode.
+    #[arg(long, short = 'l', global = true)]
+    pub listen: Option<SocketAddr>,
+
+    /// Directory where nakamoto stores its block-header and filter caches.
+    #[arg(long = "data-dir", short = 'd', global = true)]
+    pub data_dir: Option<PathBuf>,
+
+    /// Explicit nakamoto peer (repeatable).
+    #[arg(long = "peer", short = 'p', global = true)]
+    pub peer: Vec<SocketAddr>,
+
+    /// Log level.
+    #[arg(long, global = true, value_enum, default_value_t = LevelArg::Info)]
+    pub log: LevelArg,
+
+    /// Maximum number of chain reorganisation blocks to handle when rolling
+    /// back the index.
+    #[arg(long, global = true, default_value_t = DEFAULT_REORG_DEPTH)]
+    pub max_reorg_depth: u32,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    /// Run the standalone nakamoto SPV node.
+    Nakamoto,
+    /// Run the standalone electrs binary backed by Bitcoin Core.
+    Electrs,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum NetworkArg {
+    Mainnet,
+    Testnet,
+    Signet,
+    Regtest,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum LevelArg {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<NetworkArg> for Network {
+    fn from(value: NetworkArg) -> Self {
+        match value {
+            NetworkArg::Mainnet => Self::Mainnet,
+            NetworkArg::Testnet => Self::Testnet,
+            NetworkArg::Signet => Self::Signet,
+            NetworkArg::Regtest => Self::Regtest,
+        }
+    }
+}
+
+impl From<LevelArg> for Level {
+    fn from(value: LevelArg) -> Self {
+        match value {
+            LevelArg::Error => Level::ERROR,
+            LevelArg::Warn => Level::WARN,
+            LevelArg::Info => Level::INFO,
+            LevelArg::Debug => Level::DEBUG,
+            LevelArg::Trace => Level::TRACE,
+        }
+    }
+}
+
+pub enum Mode {
+    Bridge(Config),
+    Nakamoto(NakamotoConfig),
+    Electrs,
+}
+
+impl Cli {
+    pub fn into_mode(self) -> Mode {
+        let network: Network = self.network.into();
+        let log_level: Level = self.log.into();
+        let listen = self
+            .listen
+            .unwrap_or_else(|| default_electrum_addr(network));
+        let index_dir = self
+            .data_dir
+            .unwrap_or_else(|| default_index_dir(&network));
+
+        let bridge = Config {
+            network,
+            electrum_listen_addr: listen,
+            nakamoto_peers: self.peer.clone(),
+            index_dir: index_dir.clone(),
+            log_level,
+            max_reorg_depth: self.max_reorg_depth,
+        };
+
+        let nakamoto = NakamotoConfig {
+            network,
+            nakamoto_peers: self.peer,
+            index_dir,
+            log_level,
+        };
+
+        match self.command {
+            Some(Command::Nakamoto) => Mode::Nakamoto(nakamoto),
+            Some(Command::Electrs) => Mode::Electrs,
+            None => Mode::Bridge(bridge),
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn parse_level(s: &str) -> Level {
-    match s.to_ascii_lowercase().as_str() {
-        "error" => Level::ERROR,
-        "warn" => Level::WARN,
-        "info" => Level::INFO,
-        "debug" => Level::DEBUG,
-        "trace" => Level::TRACE,
-        other => {
-            eprintln!("warn: unknown log level '{other}', using info");
-            Level::INFO
-        }
-    }
-}
 
 fn default_index_dir(network: &Network) -> PathBuf {
     let net_str = match network {
@@ -171,6 +226,12 @@ fn default_index_dir(network: &Network) -> PathBuf {
     dir.push(".nakamoto-electrs");
     dir.push(net_str);
     dir
+}
+
+fn default_electrum_addr(network: Network) -> SocketAddr {
+    format!("127.0.0.1:{}", network.default_electrum_port())
+        .parse()
+        .expect("default electrum addr is valid")
 }
 
 fn dirs_or_home() -> PathBuf {
@@ -218,13 +279,32 @@ mod tests {
     }
 
     #[test]
+    fn cli_defaults_bridge_mode() {
+        let cli = Cli::parse_from(["nakamoto-electrs"]);
+        match cli.into_mode() {
+            Mode::Bridge(cfg) => {
+                assert_eq!(cfg.network, Network::Testnet);
+                assert_eq!(cfg.electrum_listen_addr.port(), 60001);
+            }
+            _ => panic!("expected bridge mode"),
+        }
+    }
+
+    #[test]
+    fn cli_nakamoto_subcommand_parses() {
+        let cli = Cli::parse_from(["nakamoto-electrs", "nakamoto", "--network", "signet"]);
+        match cli.into_mode() {
+            Mode::Nakamoto(cfg) => assert_eq!(cfg.network, Network::Signet),
+            _ => panic!("expected nakamoto mode"),
+        }
+    }
+
+    #[test]
     fn parse_level_all_variants() {
-        assert_eq!(parse_level("error"), Level::ERROR);
-        assert_eq!(parse_level("warn"), Level::WARN);
-        assert_eq!(parse_level("info"), Level::INFO);
-        assert_eq!(parse_level("debug"), Level::DEBUG);
-        assert_eq!(parse_level("trace"), Level::TRACE);
-        // unknown falls back to INFO
-        assert_eq!(parse_level("bogus"), Level::INFO);
+        assert_eq!(Level::from(LevelArg::Error), Level::ERROR);
+        assert_eq!(Level::from(LevelArg::Warn), Level::WARN);
+        assert_eq!(Level::from(LevelArg::Info), Level::INFO);
+        assert_eq!(Level::from(LevelArg::Debug), Level::DEBUG);
+        assert_eq!(Level::from(LevelArg::Trace), Level::TRACE);
     }
 }

@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 pub mod block_source;
+pub mod app;
 pub mod config;
 pub mod electrum_server;
 pub mod indexer;
