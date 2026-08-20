@@ -262,12 +262,7 @@ impl PersistentIndex {
                 sequence: entry.sequence,
             });
         }
-        out.sort_by_key(|e| {
-            (
-                if e.height == 0 { u32::MAX } else { e.height },
-                e.sequence,
-            )
-        });
+        out.sort_by_key(|e| (if e.height == 0 { u32::MAX } else { e.height }, e.sequence));
         Ok(out)
     }
 
