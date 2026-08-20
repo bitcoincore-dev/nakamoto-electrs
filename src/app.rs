@@ -1,5 +1,7 @@
 use std::fs;
+use std::io::Cursor;
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::Once;
 use std::sync::mpsc;
 use std::sync::{
@@ -10,6 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use nakamoto_common::bitcoin::blockdata::block::BlockHeader;
+use nakamoto_common::bitcoin::consensus::encode::Decodable;
 use nakamoto_client::Event;
 use nakamoto_client::{Client, handle::Handle as _};
 use nakamoto_common::bitcoin::network::constants::ServiceFlags;
@@ -44,6 +48,16 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
             crate::Network::Signet => "signet",
             crate::Network::Regtest => "regtest",
         }
+    );
+    info!(
+        "nakamoto startup expects genesis {} and cache root {:?}",
+        match cfg.network {
+            crate::Network::Mainnet => nakamoto_client::Network::Mainnet.genesis_hash(),
+            crate::Network::Testnet => nakamoto_client::Network::Testnet.genesis_hash(),
+            crate::Network::Signet => nakamoto_client::Network::Signet.genesis_hash(),
+            crate::Network::Regtest => nakamoto_client::Network::Regtest.genesis_hash(),
+        },
+        cfg.index_dir.join("nakamoto")
     );
 
     let nk_network = match cfg.network {
@@ -82,9 +96,11 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
 
         match rx.recv_timeout(CLIENT_STARTUP_WAIT) {
             Ok(err) if is_genesis_mismatch(&err) => {
+                log_cached_genesis("bridge", &cache_dir, nk_network.genesis_hash());
                 warn!(
-                    "nakamoto cache mismatch detected; clearing {:?} and retrying",
-                    cache_dir
+                    "nakamoto cache mismatch detected; clearing {:?} and retrying (expected genesis {})",
+                    cache_dir,
+                    nk_network.genesis_hash()
                 );
                 let _ = fs::remove_dir_all(&cache_dir);
                 let _ = fs::remove_dir_all(&legacy_cache_dir);
@@ -236,6 +252,12 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
 
     let cache_dir = config.root.join(".nakamoto");
     let legacy_cache_dir = cfg.index_dir.join(".nakamoto");
+    info!(
+        target: "nakamoto",
+        "nakamoto startup expects genesis {} and cache root {:?}",
+        nk_network.genesis_hash(),
+        config.root
+    );
     let shutdown = Arc::new(AtomicBool::new(false));
     let startup_complete = Arc::new(AtomicBool::new(false));
     install_shutdown_handler(Arc::clone(&shutdown))?;
@@ -261,10 +283,12 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
 
         match rx.recv_timeout(CLIENT_STARTUP_WAIT) {
             Ok(err) if is_genesis_mismatch(&err) => {
+                log_cached_genesis("nakamoto", &cache_dir, nk_network.genesis_hash());
                 warn!(
                     target: "nakamoto",
-                    "nakamoto cache mismatch detected; clearing {:?} and retrying",
-                    cache_dir
+                    "nakamoto cache mismatch detected; clearing {:?} and retrying (expected genesis {})",
+                    cache_dir,
+                    nk_network.genesis_hash()
                 );
                 let _ = fs::remove_dir_all(&cache_dir);
                 let _ = fs::remove_dir_all(&legacy_cache_dir);
@@ -344,4 +368,52 @@ where
 
 fn is_genesis_mismatch(err: &str) -> bool {
     err.contains("stored genesis header doesn't match network genesis")
+}
+
+fn log_cached_genesis(mode: &str, cache_dir: &Path, expected: nakamoto_common::block::BlockHash) {
+    let headers_path = cache_dir.join("signet").join("headers.db");
+    match fs::read(&headers_path) {
+        Ok(bytes) if bytes.len() >= 80 => {
+            let mut cursor = Cursor::new(&bytes[..80]);
+            match BlockHeader::consensus_decode(&mut cursor) {
+                Ok(header) => {
+                    warn!(
+                        mode,
+                        "nakamoto cache genesis mismatch at {:?}: stored prev_blockhash={} stored header={} expected genesis={}",
+                        headers_path,
+                        header.prev_blockhash,
+                        header.block_hash(),
+                        expected
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        mode,
+                        "nakamoto cache genesis mismatch at {:?}: could not decode first header: {} expected genesis={}",
+                        headers_path,
+                        e,
+                        expected
+                    );
+                }
+            }
+        }
+        Ok(bytes) => {
+            warn!(
+                mode,
+                "nakamoto cache genesis mismatch at {:?}: file too small ({} bytes) expected genesis={}",
+                headers_path,
+                bytes.len(),
+                expected
+            );
+        }
+        Err(e) => {
+            warn!(
+                mode,
+                "nakamoto cache genesis mismatch at {:?}: could not read headers.db: {} expected genesis={}",
+                headers_path,
+                e,
+                expected
+            );
+        }
+    }
 }
