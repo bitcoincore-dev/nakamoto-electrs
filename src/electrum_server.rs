@@ -976,6 +976,58 @@ mod tests {
     }
 
     #[test]
+    fn transaction_broadcast_emits_pending_change_notification() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct MockBroadcaster {
+            seen: Arc<Mutex<Option<bitcoin::Txid>>>,
+        }
+
+        impl TransactionBroadcaster for MockBroadcaster {
+            fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String> {
+                *self.seen.lock().unwrap() = Some(tx.compute_txid());
+                Ok(())
+            }
+        }
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51]),
+            }],
+        };
+        let txid = tx.compute_txid().to_string();
+        let params = json!([hex::encode(bitcoin::consensus::encode::serialize(&tx))]);
+        let mock = MockBroadcaster::default();
+        let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(mock.clone());
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let pending_changes = PendingChangeBroadcaster::default();
+        let rx = pending_changes.subscribe();
+        let resp = handle_transaction_broadcast(
+            &params,
+            &Metrics::new(),
+            Some(&broadcaster),
+            &indexer,
+            &pending_changes,
+        )
+        .expect("broadcast");
+        assert_eq!(resp, Value::String(txid));
+        assert_eq!(*mock.seen.lock().unwrap(), Some(tx.compute_txid()));
+        let affected = rx.recv().expect("pending notification");
+        assert_eq!(affected, vec![ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(vec![0x51]))]);
+    }
+
+    #[test]
     fn headers_subscribe_returns_current_tip_shape() {
         use crate::block_source::{BlockEvent, BlockSource};
         use crossbeam_channel::Receiver;
