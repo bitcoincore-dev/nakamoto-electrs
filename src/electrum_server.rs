@@ -300,6 +300,14 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                                 crate::block_source::BlockEvent::Connected { .. }
                                     | crate::block_source::BlockEvent::Disconnected { .. }
                             ) {
+                                let current_headers = match &event {
+                                    crate::block_source::BlockEvent::Connected { block, height } => {
+                                        Some((*height, serialize_hex(&block.header)))
+                                    }
+                                    _ => current_header_status(&indexer, source.as_ref())
+                                        .ok()
+                                        .flatten(),
+                                };
                                 let mut changed = Vec::new();
                                 {
                                     let mut state = state.lock().expect("electrum state poisoned");
@@ -313,9 +321,6 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                                         }
                                     }
                                 }
-                                let current_headers = current_header_status(&indexer, source.as_ref())
-                                    .ok()
-                                    .flatten();
                                 let mut send_header = false;
                                 {
                                     let mut state = state.lock().expect("electrum state poisoned");
@@ -1347,6 +1352,7 @@ mod tests {
         use crate::block_source::{BlockEvent, BlockSource};
         use crossbeam_channel::Receiver;
         use std::collections::BTreeMap;
+        use std::io::ErrorKind;
         use std::net::SocketAddr;
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
@@ -1432,11 +1438,25 @@ mod tests {
         let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         stream
-            .write_all(br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.headers.subscribe","params":[]}"#)
+            .write_all(
+                br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.headers.subscribe","params":[]}"#,
+            )
             .unwrap();
+        stream.write_all(b"\n").unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "timed out waiting for response");
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read response: {err}"),
+            }
+        }
         let initial: Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(initial["result"]["height"], json!(0));
 
@@ -1454,7 +1474,17 @@ mod tests {
         source.push_connected(block, 1);
 
         line.clear();
-        reader.read_line(&mut line).unwrap();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "timed out waiting for notification");
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read notification: {err}"),
+            }
+        }
         let notification: Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(notification["method"], "blockchain.headers.subscribe");
         assert_eq!(notification["params"][0]["height"], json!(1));
