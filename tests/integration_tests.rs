@@ -847,21 +847,37 @@ fn electrum_scripthash_queries_return_indexed_data() {
         thread::sleep(Duration::from_millis(50));
     }
 
-    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-
-    write!(
-        stream,
-        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.get_history","params":["{}"]}}"#,
-        sh.to_hex()
-    )
-    .unwrap();
-    stream.write_all(b"\n").unwrap();
-
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut line = String::new();
-    reader.read_line(&mut line).unwrap();
-    let history: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+
+    let history: serde_json::Value = {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.get_history","params":["{}"]}}"#,
+            sh.to_hex()
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+        line.clear();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for history response"
+                    );
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read history response: {err}"),
+            }
+        }
+        serde_json::from_str(line.trim()).unwrap()
+    };
     assert_eq!(history["result"].as_array().unwrap().len(), 1);
     assert_eq!(history["result"][0]["height"], serde_json::json!(1));
     assert_eq!(
@@ -869,29 +885,65 @@ fn electrum_scripthash_queries_return_indexed_data() {
         serde_json::json!(block.txdata[0].compute_txid().to_string())
     );
 
-    line.clear();
-    write!(
-        stream,
-        r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.scripthash.get_balance","params":["{}"]}}"#,
-        sh.to_hex()
-    )
-    .unwrap();
-    stream.write_all(b"\n").unwrap();
-    reader.read_line(&mut line).unwrap();
-    let balance: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    let balance: serde_json::Value = {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.scripthash.get_balance","params":["{}"]}}"#,
+            sh.to_hex()
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+        line.clear();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for balance response"
+                    );
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read balance response: {err}"),
+            }
+        }
+        serde_json::from_str(line.trim()).unwrap()
+    };
     assert_eq!(balance["result"]["confirmed"], serde_json::json!(1000));
     assert_eq!(balance["result"]["unconfirmed"], serde_json::json!(0));
 
-    line.clear();
-    write!(
-        stream,
-        r#"{{"jsonrpc":"2.0","id":3,"method":"blockchain.scripthash.listunspent","params":["{}"]}}"#,
-        sh.to_hex()
-    )
-    .unwrap();
-    stream.write_all(b"\n").unwrap();
-    reader.read_line(&mut line).unwrap();
-    let unspent: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    let unspent: serde_json::Value = {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":3,"method":"blockchain.scripthash.listunspent","params":["{}"]}}"#,
+            sh.to_hex()
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+        line.clear();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for listunspent response"
+                    );
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read listunspent response: {err}"),
+            }
+        }
+        serde_json::from_str(line.trim()).unwrap()
+    };
     assert_eq!(unspent["result"].as_array().unwrap().len(), 1);
     assert_eq!(unspent["result"][0]["height"], serde_json::json!(1));
     assert_eq!(unspent["result"][0]["value"], serde_json::json!(1000));
