@@ -1592,4 +1592,41 @@ mod tests {
 
         shutdown.store(true, Ordering::SeqCst);
     }
+
+    #[test]
+    fn scripthash_subscribe_reflects_pending_transaction_state() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let mut state = ClientState::new();
+        let script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let sh = ScriptHash::from_script(&script);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: script.clone(),
+            }],
+        };
+
+        let empty = handle_scripthash_subscribe(&json!([sh.to_hex()]), &mut state, &indexer)
+            .expect("subscribe");
+        assert!(empty.is_null());
+
+        indexer.track_pending_transaction(&tx).expect("track pending");
+        let pending = handle_scripthash_subscribe(&json!([sh.to_hex()]), &mut state, &indexer)
+            .expect("subscribe pending");
+        assert!(pending.is_string());
+        assert_eq!(state.subscribed_scripthashes, vec![sh]);
+        assert_eq!(
+            state.status_by_scripthash.get(&sh).and_then(|status| status.as_deref()),
+            pending.as_str()
+        );
+    }
 }
