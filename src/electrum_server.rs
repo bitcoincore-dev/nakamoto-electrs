@@ -576,6 +576,46 @@ mod tests {
     }
 
     #[test]
+    fn transaction_broadcast_returns_txid_when_supported() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct MockBroadcaster {
+            seen: Arc<Mutex<Option<bitcoin::Txid>>>,
+        }
+
+        impl TransactionBroadcaster for MockBroadcaster {
+            fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String> {
+                *self.seen.lock().unwrap() = Some(tx.compute_txid());
+                Ok(())
+            }
+        }
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        };
+        let txid = tx.compute_txid().to_string();
+        let params = json!([hex::encode(bitcoin::consensus::encode::serialize(&tx))]);
+        let mock = MockBroadcaster::default();
+        let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(mock.clone());
+        let resp = handle_transaction_broadcast(&params, &Metrics::new(), Some(&broadcaster))
+            .expect("broadcast");
+        assert_eq!(resp, Value::String(txid));
+        assert_eq!(*mock.seen.lock().unwrap(), Some(tx.compute_txid()));
+    }
+
+    #[test]
     fn listunspent_uses_expected_fields() {
         let params = json!(["0".repeat(64)]);
         assert!(handle_scripthash_listunspent(&params, &Indexer::new(
