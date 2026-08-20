@@ -215,12 +215,12 @@ mod mock {
         let outputs = scripts
             .into_iter()
             .map(|s| TxOut {
-                value: 1000u64,
+                value: bitcoin::Amount::from_sat(1000),
                 script_pubkey: s,
             })
             .collect();
         Transaction {
-            version: 1i32,
+            version: bitcoin::transaction::Version::non_standard(1),
             lock_time: LockTime::ZERO,
             input: vec![TxIn {
                 previous_output: OutPoint::null(),
