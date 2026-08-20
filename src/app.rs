@@ -237,7 +237,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
     let legacy_cache_dir = cfg.index_dir.join(".nakamoto");
     let shutdown = Arc::new(AtomicBool::new(false));
     install_shutdown_handler(Arc::clone(&shutdown))?;
-    let (handle, client_runner) = loop {
+    let (handle, _client_runner) = loop {
         if shutdown.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -293,7 +293,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
 
     let events = handle.events();
 
-    let event_logger = thread::Builder::new()
+    let _event_logger = thread::Builder::new()
         .name("nk-events".into())
         .spawn(move || {
             for event in &events {
@@ -301,11 +301,9 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
             }
         })?;
 
-    if shutdown.load(Ordering::Relaxed) {
-        return Ok(());
+    while !shutdown.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
     }
-    let _ = client_runner.join();
-    let _ = event_logger.join();
     Ok(())
 }
 
