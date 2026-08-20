@@ -1014,7 +1014,12 @@ mod tests {
         let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
             .expect("indexer");
         let txid = bitcoin::Txid::all_zeros();
-        assert!(indexer.restore_pending_transaction(&txid).unwrap().is_none());
+        assert!(
+            indexer
+                .restore_pending_transaction(&txid)
+                .unwrap()
+                .is_none()
+        );
         assert!(indexer.forget_pending_transaction(&txid).unwrap().is_none());
     }
 }
