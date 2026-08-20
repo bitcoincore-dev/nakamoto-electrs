@@ -639,6 +639,59 @@ fn electrum_scripthash_subscribe_receives_update_after_connected_block() {
 }
 
 #[test]
+fn electrum_transaction_get_returns_indexed_transaction() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(addr, indexer.clone(), metrics, None, fee_rate, pending_changes)
+        .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let script = p2pkh_script();
+    let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
+    let tx = block.txdata[0].clone();
+    let txid = tx.compute_txid();
+    source.push(BlockEvent::Connected { block, height: 1 });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while indexer.get_transaction(&txid).unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for indexed transaction"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.transaction.get","params":["{}"]}}"#,
+        txid
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(resp["result"], serde_json::json!(hex::encode(bitcoin::consensus::encode::serialize(&tx))));
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+#[test]
 fn indexer_restores_and_forgets_pending_transactions() {
     let indexer = make_indexer(Metrics::new());
 
