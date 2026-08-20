@@ -340,3 +340,414 @@ impl BlockSource for NakamotoBlockSource {
         Ok(cache.get(hash).cloned())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::{Receiver, Sender, unbounded};
+    use nakamoto_common::block::{
+        tree::BlockReader,
+        Block as NkBlock, BlockHash as NkBlockHash, BlockHeader, Height,
+    };
+    use nakamoto_common::bitcoin::{
+        blockdata::{
+            locktime::PackedLockTime,
+            script::Builder,
+            transaction::{Transaction as NkTx, TxIn, TxOut},
+        },
+        hash_types::TxMerkleNode,
+        hashes::Hash,
+        OutPoint, Script, Sequence, Witness,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
+
+    #[derive(Clone)]
+    struct FakeTree {
+        headers: BTreeMap<Height, BlockHeader>,
+    }
+
+    impl nakamoto_common::block::tree::BlockReader for FakeTree {
+        fn get_block(&self, hash: &NkBlockHash) -> Option<(Height, &BlockHeader)> {
+            self.headers
+                .iter()
+                .find(|(_, header)| header.block_hash() == *hash)
+                .map(|(height, header)| (*height, header))
+        }
+
+        fn get_block_by_height(&self, height: Height) -> Option<&BlockHeader> {
+            self.headers.get(&height)
+        }
+
+        fn find_branch(
+            &self,
+            _to: &NkBlockHash,
+        ) -> Option<(Height, nakamoto_common::nonempty::NonEmpty<BlockHeader>)> {
+            None
+        }
+
+        fn iter<'a>(&'a self) -> Box<dyn DoubleEndedIterator<Item = (Height, BlockHeader)> + 'a> {
+            let mut items: Vec<_> = self.headers.iter().map(|(h, hdr)| (*h, *hdr)).collect();
+            items.sort_by_key(|(h, _)| *h);
+            Box::new(items.into_iter())
+        }
+
+        fn height(&self) -> Height {
+            self.headers.keys().next_back().copied().unwrap_or(0)
+        }
+
+        fn tip(&self) -> (NkBlockHash, BlockHeader) {
+            let height = self.height();
+            let header = *self
+                .headers
+                .get(&height)
+                .expect("fake tree needs tip");
+            (header.block_hash(), header)
+        }
+
+        fn last_checkpoint(&self) -> Height {
+            0
+        }
+
+        fn checkpoints(&self) -> BTreeMap<Height, NkBlockHash> {
+            BTreeMap::new()
+        }
+
+        fn is_known(&self, hash: &NkBlockHash) -> bool {
+            self.headers.values().any(|header| header.block_hash() == *hash)
+        }
+
+        fn contains(&self, hash: &NkBlockHash) -> bool {
+            self.is_known(hash)
+        }
+
+        fn locate_headers(
+            &self,
+            _locators: &[NkBlockHash],
+            _stop_hash: NkBlockHash,
+            _max_headers: usize,
+        ) -> Vec<BlockHeader> {
+            self.headers.values().copied().collect()
+        }
+
+        fn locator_hashes(&self, from: Height) -> Vec<NkBlockHash> {
+            self.headers
+                .range(..=from)
+                .rev()
+                .map(|(_, header)| header.block_hash())
+                .collect()
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeHandle {
+        events_rx: Receiver<NkEvent>,
+        blocks_rx: Receiver<(nakamoto_common::bitcoin::blockdata::block::Block, u64)>,
+        requested_blocks: Arc<Mutex<Vec<NkBlockHash>>>,
+        tree: FakeTree,
+    }
+
+    impl FakeHandle {
+        fn new(
+            tree: FakeTree,
+        ) -> (
+            Self,
+            Sender<NkEvent>,
+            Sender<(nakamoto_common::bitcoin::blockdata::block::Block, u64)>,
+            Arc<Mutex<Vec<NkBlockHash>>>,
+        ) {
+            let (events_tx, events_rx) = unbounded();
+            let (blocks_tx, blocks_rx) = unbounded();
+            let requested_blocks = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    events_rx,
+                    blocks_rx,
+                    requested_blocks: Arc::clone(&requested_blocks),
+                    tree,
+                },
+                events_tx,
+                blocks_tx,
+                requested_blocks,
+            )
+        }
+    }
+
+    impl Handle for FakeHandle {
+        fn get_tip(&self) -> Result<(u64, BlockHeader), nakamoto_client::handle::Error> {
+            let (hash, header) = self.tree.tip();
+            let (height, _) = self.tree.get_block(&hash).expect("tip exists");
+            Ok((height, header))
+        }
+
+        fn get_block(
+            &self,
+            hash: &NkBlockHash,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            self.requested_blocks.lock().unwrap().push(*hash);
+            Ok(())
+        }
+
+        fn query_tree(
+            &self,
+            query: impl Fn(&dyn nakamoto_common::block::tree::BlockReader) + Send + Sync + 'static,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            query(&self.tree);
+            Ok(())
+        }
+
+        fn find_branch(
+            &self,
+            _to: &NkBlockHash,
+        ) -> Result<
+            Option<(
+                u64,
+                nakamoto_common::nonempty::NonEmpty<BlockHeader>,
+            )>,
+            nakamoto_client::handle::Error,
+        > {
+            Ok(None)
+        }
+
+        fn blocks(&self) -> Receiver<(nakamoto_common::bitcoin::blockdata::block::Block, u64)> {
+            self.blocks_rx.clone()
+        }
+
+        fn filters(
+            &self,
+        ) -> Receiver<(
+            nakamoto_common::block::filter::BlockFilter,
+            NkBlockHash,
+            u64,
+        )> {
+            let (_tx, rx) = unbounded();
+            rx
+        }
+
+        fn events(&self) -> Receiver<NkEvent> {
+            self.events_rx.clone()
+        }
+
+        fn command(
+            &self,
+            _cmd: nakamoto_p2p::fsm::Command,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            Ok(())
+        }
+
+        fn broadcast(
+            &self,
+            _msg: nakamoto_common::bitcoin::network::message::NetworkMessage,
+            _predicate: fn(nakamoto_p2p::fsm::Peer) -> bool,
+        ) -> Result<Vec<std::net::SocketAddr>, nakamoto_client::handle::Error> {
+            Ok(vec![])
+        }
+
+        fn query(
+            &self,
+            _msg: nakamoto_common::bitcoin::network::message::NetworkMessage,
+        ) -> Result<Option<std::net::SocketAddr>, nakamoto_client::handle::Error> {
+            Ok(None)
+        }
+
+        fn connect(
+            &self,
+            _addr: std::net::SocketAddr,
+        ) -> Result<nakamoto_client::Link, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+
+        fn disconnect(
+            &self,
+            _addr: std::net::SocketAddr,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            Ok(())
+        }
+
+        fn submit_transaction(
+            &self,
+            _tx: nakamoto_common::bitcoin::Transaction,
+        ) -> Result<nakamoto_common::nonempty::NonEmpty<std::net::SocketAddr>, nakamoto_client::handle::Error>
+        {
+            unreachable!()
+        }
+
+        fn import_headers(
+            &self,
+            _headers: Vec<BlockHeader>,
+        ) -> Result<Result<nakamoto_common::block::tree::ImportResult, nakamoto_common::block::tree::Error>, nakamoto_client::handle::Error>
+        {
+            unreachable!()
+        }
+
+        fn get_filters(
+            &self,
+            _range: std::ops::RangeInclusive<Height>,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            Ok(())
+        }
+
+        fn import_addresses(
+            &self,
+            _addrs: Vec<nakamoto_common::bitcoin::network::Address>,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            Ok(())
+        }
+
+        fn wait<F: FnMut(nakamoto_p2p::fsm::Event) -> Option<T>, T>(
+            &self,
+            _f: F,
+        ) -> Result<T, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+
+        fn wait_for_peers(
+            &self,
+            _count: usize,
+            _required_services: impl Into<nakamoto_common::bitcoin::network::constants::ServiceFlags>,
+        ) -> Result<
+            Vec<(
+                std::net::SocketAddr,
+                Height,
+                nakamoto_common::bitcoin::network::constants::ServiceFlags,
+            )>,
+            nakamoto_client::handle::Error,
+        > {
+            unreachable!()
+        }
+
+        fn wait_for_height(&self, _h: Height) -> Result<NkBlockHash, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+
+        fn shutdown(self) -> Result<(), nakamoto_client::handle::Error> {
+            Ok(())
+        }
+    }
+
+    fn make_header(height: Height) -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            prev_blockhash: NkBlockHash::all_zeros(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: height as u32,
+            bits: 0x1d00ffff,
+            nonce: height as u32,
+        }
+    }
+
+    fn make_block(height: Height, script: Script) -> NkBlock {
+        let tx = NkTx {
+            version: 1,
+            lock_time: PackedLockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: 1000,
+                script_pubkey: script,
+            }],
+        };
+        NkBlock {
+            header: make_header(height),
+            txdata: vec![tx],
+        }
+    }
+
+    #[test]
+    fn connected_block_is_downloaded_cached_and_broadcast() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let script = Builder::from(vec![0x51]).into_script();
+        let block = make_block(1, script);
+        let nk_block_hash = block.block_hash();
+        let block_hash = conv_hash(&nk_block_hash).expect("converted hash");
+        let tree = FakeTree {
+            headers: BTreeMap::from([(1, make_header(1))]),
+        };
+        let (handle, events_tx, blocks_tx, requested) = FakeHandle::new(tree);
+        let source = NakamotoBlockSource::new(handle, Arc::clone(&shutdown));
+        let rx = source.subscribe();
+
+        events_tx
+            .send(NkEvent::BlockConnected {
+                header: make_header(1),
+                hash: nk_block_hash,
+                height: 1,
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(requested.lock().unwrap().as_slice(), &[nk_block_hash]);
+
+        blocks_tx.send((block.clone(), 1)).unwrap();
+        let event = rx.recv_timeout(Duration::from_secs(1)).expect("connected");
+        match event {
+            BlockEvent::Connected { block: got, height } => {
+                assert_eq!(height, 1);
+                assert_eq!(got.block_hash(), block_hash);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert_eq!(
+            source.block_by_hash(&block_hash).expect("cache lookup"),
+            Some(conv_block(&block).expect("converted block"))
+        );
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn synced_event_broadcasts_tip_hash() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let tree = FakeTree {
+            headers: BTreeMap::from([(7, make_header(7))]),
+        };
+        let (handle, events_tx, _blocks_tx, _requested) = FakeHandle::new(tree);
+        let source = NakamotoBlockSource::new(handle, Arc::clone(&shutdown));
+        let rx = source.subscribe();
+
+        events_tx
+            .send(NkEvent::Synced {
+                height: 7,
+                tip: 7,
+            })
+            .unwrap();
+        match rx.recv_timeout(Duration::from_secs(1)).expect("synced") {
+            BlockEvent::Synced { height, tip } => {
+                assert_eq!(height, 7);
+                assert_eq!(tip, conv_hash(&make_header(7).block_hash()).expect("tip hash"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn point_queries_hit_handle_tree() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let tree = FakeTree {
+            headers: BTreeMap::from([(3, make_header(3))]),
+        };
+        let (handle, _events_tx, _blocks_tx, _requested) = FakeHandle::new(tree);
+        let source = NakamotoBlockSource::new(handle, Arc::clone(&shutdown));
+
+        assert_eq!(
+            source.tip().unwrap(),
+            (3, conv_hash(&make_header(3).block_hash()).expect("tip hash"))
+        );
+        assert_eq!(
+            source.block_header(3).unwrap(),
+            Some(conv_header(&make_header(3)).expect("header"))
+        );
+        assert!(source.block_header(4).unwrap().is_none());
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
+}
