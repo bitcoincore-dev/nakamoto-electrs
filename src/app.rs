@@ -95,6 +95,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
             }
         }
     };
+    let _client_shutdown_watcher = spawn_shutdown_watcher(handle.clone(), Arc::clone(&shutdown));
 
     let metrics = Metrics::new();
     let source = Arc::new(NakamotoBlockSource::new(
@@ -260,6 +261,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
             }
         }
     };
+    let _client_shutdown_watcher = spawn_shutdown_watcher(handle.clone(), Arc::clone(&shutdown));
 
     let events = handle.events();
 
@@ -292,4 +294,19 @@ fn install_shutdown_handler(shutdown: Arc<AtomicBool>) -> Result<()> {
         .expect("failed to install Ctrl-C handler");
     });
     Ok(())
+}
+
+fn spawn_shutdown_watcher<H>(handle: H, shutdown: Arc<AtomicBool>) -> thread::JoinHandle<()>
+where
+    H: nakamoto_client::handle::Handle + Send + 'static,
+{
+    thread::Builder::new()
+        .name("nakamoto-shutdown".into())
+        .spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(100));
+            }
+            let _ = handle.shutdown();
+        })
+        .expect("failed to spawn nakamoto shutdown watcher")
 }
