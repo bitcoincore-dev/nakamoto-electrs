@@ -56,10 +56,11 @@ jobs:
       - name: Detect latest Bitcoin Core release (including RCs)
         id: btc_version
         run: |
-          # Fetch the 10 most recent releases (includes prereleases / RCs).
+          # Fetch the 30 most recent releases (includes prereleases / RCs).
           RELEASES=$(curl -fsSL \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/bitcoin/bitcoin/releases?per_page=10")
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/bitcoin/bitcoin/releases?per_page=30")
 
           # Extract the tag_name from the most-recently *published* entry.
           # jq sorts by published_at descending and takes the first non-draft entry.
