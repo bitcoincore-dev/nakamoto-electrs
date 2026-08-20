@@ -11,19 +11,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use crossbeam_channel::RecvTimeoutError;
 use nakamoto_client::Event;
 use nakamoto_client::{Client, handle::Handle as _};
 use nakamoto_common::bitcoin::network::constants::ServiceFlags;
 use nakamoto_net_poll::Reactor;
-use crossbeam_channel::RecvTimeoutError;
 use tracing::{error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
     config::{Config, NakamotoConfig},
     electrum_server::{
-        apply_tx_status_change, ElectrumServer, FeeRateState, PendingChangeBroadcaster,
-        TransactionBroadcaster,
+        ElectrumServer, FeeRateState, PendingChangeBroadcaster, TransactionBroadcaster,
+        apply_tx_status_change,
     },
     indexer::Indexer,
     metrics::Metrics,
@@ -155,14 +155,12 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
                     }
                     match tx_status_events.recv_timeout(Duration::from_millis(200)) {
                         Ok(Event::TxStatusChanged { txid, status }) => {
-                            if let Err(e) =
-                                apply_tx_status_change(
-                                    &indexer,
-                                    &pending_changes,
-                                    &txid.to_string(),
-                                    &status.to_string(),
-                                )
-                            {
+                            if let Err(e) = apply_tx_status_change(
+                                &indexer,
+                                &pending_changes,
+                                &txid.to_string(),
+                                &status.to_string(),
+                            ) {
                                 error!(target: "nakamoto", "tx status handling failed: {e:#}");
                             }
                         }
@@ -430,10 +428,10 @@ fn wait_for_shutdown(shutdown: Arc<AtomicBool>) {
 mod tests {
     use super::*;
     use nakamoto_client::{Command, Link, Peer};
+    use nakamoto_p2p::fsm::Event as FsmEvent;
     use std::net::SocketAddr;
     use std::sync::atomic::AtomicUsize;
     use tempfile::tempdir;
-    use nakamoto_p2p::fsm::Event as FsmEvent;
 
     #[derive(Clone)]
     struct MockHandle {
@@ -451,10 +449,13 @@ mod tests {
     impl nakamoto_client::handle::Handle for MockHandle {
         fn get_tip(
             &self,
-        ) -> Result<(
-            nakamoto_common::block::Height,
-            nakamoto_common::block::BlockHeader,
-        ), nakamoto_client::handle::Error> {
+        ) -> Result<
+            (
+                nakamoto_common::block::Height,
+                nakamoto_common::block::BlockHeader,
+            ),
+            nakamoto_client::handle::Error,
+        > {
             unreachable!()
         }
         fn get_block(
@@ -523,25 +524,17 @@ mod tests {
         ) -> Result<Option<SocketAddr>, nakamoto_client::handle::Error> {
             unreachable!()
         }
-        fn connect(
-            &self,
-            _addr: SocketAddr,
-        ) -> Result<Link, nakamoto_client::handle::Error> {
+        fn connect(&self, _addr: SocketAddr) -> Result<Link, nakamoto_client::handle::Error> {
             unreachable!()
         }
-        fn disconnect(
-            &self,
-            _addr: SocketAddr,
-        ) -> Result<(), nakamoto_client::handle::Error> {
+        fn disconnect(&self, _addr: SocketAddr) -> Result<(), nakamoto_client::handle::Error> {
             unreachable!()
         }
         fn submit_transaction(
             &self,
             _tx: nakamoto_common::block::Transaction,
-        ) -> Result<
-            nakamoto_common::nonempty::NonEmpty<SocketAddr>,
-            nakamoto_client::handle::Error,
-        > {
+        ) -> Result<nakamoto_common::nonempty::NonEmpty<SocketAddr>, nakamoto_client::handle::Error>
+        {
             unreachable!()
         }
         fn import_headers(
