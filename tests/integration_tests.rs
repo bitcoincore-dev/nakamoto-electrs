@@ -4,11 +4,11 @@
 //! covering interactions between multiple modules rather than individual
 //! functions in isolation.
 
-use nakamoto_electrs::indexer::Indexer;
-use nakamoto_electrs::metrics::Metrics;
 use nakamoto_electrs::electrum_server::{
     ElectrumServer, FeeRateState, PendingChangeBroadcaster, TransactionBroadcaster,
 };
+use nakamoto_electrs::indexer::Indexer;
+use nakamoto_electrs::metrics::Metrics;
 use nakamoto_electrs::{
     Network, block_reward_sats, format_fee_rate, is_halving_height, is_valid_script_hex,
     saturating_sub, txid_to_electrum_bytes,
@@ -617,7 +617,9 @@ fn electrum_scripthash_subscribe_receives_update_after_connected_block() {
     let script = p2pkh_script();
     let sh = sh_of(&script);
     let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
 
     write!(
@@ -643,7 +645,10 @@ fn electrum_scripthash_subscribe_receives_update_after_connected_block() {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for notification");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for notification"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read notification: {err}"),
@@ -666,8 +671,15 @@ fn electrum_transaction_get_returns_indexed_transaction() {
     let fee_rate = Arc::new(FeeRateState::new());
     let pending_changes = PendingChangeBroadcaster::default();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let server = ElectrumServer::bind(addr, indexer.clone(), metrics, None, fee_rate, pending_changes)
-        .expect("bind");
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
     let local_addr = server.local_addr();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_thread = Arc::clone(&shutdown);
@@ -692,7 +704,9 @@ fn electrum_transaction_get_returns_indexed_transaction() {
     }
 
     let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     write!(
         stream,
@@ -705,7 +719,10 @@ fn electrum_transaction_get_returns_indexed_transaction() {
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(resp["result"], serde_json::json!(hex::encode(bitcoin::consensus::encode::serialize(&tx))));
+    assert_eq!(
+        resp["result"],
+        serde_json::json!(hex::encode(bitcoin::consensus::encode::serialize(&tx)))
+    );
 
     shutdown.store(true, Ordering::SeqCst);
 }
@@ -774,7 +791,8 @@ fn electrum_transaction_broadcast_notifies_subscribed_scripthash() {
     let initial: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert!(initial["result"].is_null());
 
-    let mut broadcast_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    let mut broadcast_stream =
+        TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     broadcast_stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -790,7 +808,10 @@ fn electrum_transaction_broadcast_notifies_subscribed_scripthash() {
     line.clear();
     broadcast_reader.read_line(&mut line).unwrap();
     let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(resp["result"], serde_json::json!(tx.compute_txid().to_string()));
+    assert_eq!(
+        resp["result"],
+        serde_json::json!(tx.compute_txid().to_string())
+    );
 
     let mut got_notification = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -869,7 +890,9 @@ fn electrum_scripthash_queries_return_indexed_data() {
 
     let history: serde_json::Value = {
         let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         write!(
             stream,
@@ -904,7 +927,9 @@ fn electrum_scripthash_queries_return_indexed_data() {
 
     let balance: serde_json::Value = {
         let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         write!(
             stream,
@@ -935,7 +960,9 @@ fn electrum_scripthash_queries_return_indexed_data() {
 
     let unspent: serde_json::Value = {
         let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         write!(
             stream,
@@ -998,10 +1025,7 @@ fn electrum_disconnect_reverts_headers_and_scripthash_state() {
     let sh = sh_of(&script);
     let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
     let block_hash = block.block_hash();
-    source.push(BlockEvent::Connected {
-        block,
-        height: 1,
-    });
+    source.push(BlockEvent::Connected { block, height: 1 });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while indexer.get_history(&sh).is_empty() {
@@ -1012,7 +1036,8 @@ fn electrum_disconnect_reverts_headers_and_scripthash_state() {
         thread::sleep(Duration::from_millis(50));
     }
 
-    let mut headers_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    let mut headers_stream =
+        TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     headers_stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -1030,7 +1055,9 @@ fn electrum_disconnect_reverts_headers_and_scripthash_state() {
     assert_eq!(initial_headers["result"]["height"], serde_json::json!(1));
 
     let mut sh_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    sh_stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    sh_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut sh_reader = BufReader::new(sh_stream.try_clone().unwrap());
     write!(
         sh_stream,
@@ -1126,10 +1153,7 @@ fn electrum_block_header_queries_return_indexed_data() {
     let script = p2pkh_script();
     let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
     let header_hex = hex::encode(bitcoin::consensus::encode::serialize(&block.header));
-    source.push(BlockEvent::Connected {
-        block,
-        height: 1,
-    });
+    source.push(BlockEvent::Connected { block, height: 1 });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while indexer.tip_height() < 1 {
@@ -1142,7 +1166,9 @@ fn electrum_block_header_queries_return_indexed_data() {
 
     let header: serde_json::Value = {
         let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         write!(
             stream,
@@ -1157,7 +1183,10 @@ fn electrum_block_header_queries_return_indexed_data() {
                 Ok(0) => continue,
                 Ok(_) => break,
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(std::time::Instant::now() < deadline, "timed out waiting for header response");
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for header response"
+                    );
                     thread::sleep(Duration::from_millis(50));
                 }
                 Err(err) => panic!("failed to read header response: {err}"),
@@ -1169,7 +1198,9 @@ fn electrum_block_header_queries_return_indexed_data() {
 
     let headers: serde_json::Value = {
         let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         write!(
             stream,
@@ -1184,7 +1215,10 @@ fn electrum_block_header_queries_return_indexed_data() {
                 Ok(0) => continue,
                 Ok(_) => break,
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(std::time::Instant::now() < deadline, "timed out waiting for headers response");
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for headers response"
+                    );
                     thread::sleep(Duration::from_millis(50));
                 }
                 Err(err) => panic!("failed to read headers response: {err}"),
