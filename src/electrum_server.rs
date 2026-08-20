@@ -372,7 +372,7 @@ fn handle_transaction_broadcast(
             broadcaster.broadcast_transaction(tx).map_err(|e| format!("broadcast failed: {e}"))?;
             Ok(Value::String(txid.to_string()))
         }
-        None => Err("transaction broadcast not available in this mode".into()),
+        None => Err("transaction broadcast is only available in bridge mode".into()),
     }
 }
 

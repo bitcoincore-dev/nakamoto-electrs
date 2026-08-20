@@ -138,8 +138,6 @@ cargo test --test e2e_regtest -- --ignored
   unconfirmed/mempool balance is still not modeled.
 * **Persistent index** — history, raw transaction lookups, and confirmed UTXOs
   survive restarts via the embedded store.
-* **No transaction broadcast** — `blockchain.transaction.broadcast` parses and
-  validates the transaction but does not yet forward it to the nakamoto handle.
 * **nakamoto is SPV** — nakamoto downloads compact block filters (BIP 157/158)
   and fetches full blocks only for matching filters.  This means the indexer
   only sees blocks that match watched scripts.  Watching all scripts requires
