@@ -440,6 +440,7 @@ fn handle_transaction_broadcast(
 
 fn handle_estimatefee(params: &Value, fee_rate: &Arc<FeeRateState>) -> std::result::Result<Value, String> {
     let _blocks = params.get(0).and_then(Value::as_u64).unwrap_or(6);
+    // Return -1 until we have seen at least one fee estimate from nakamoto.
     match fee_rate.current_sat_per_vb() {
         Some(sat_per_vb) => {
             let btc_per_kvb = (sat_per_vb as f64) * 0.00001f64;
@@ -680,5 +681,12 @@ mod tests {
         fee_rate.update_sat_per_vb(25);
         let value = handle_estimatefee(&json!([6]), &fee_rate).expect("estimate");
         assert_eq!(value, json!(0.00025f64));
+    }
+
+    #[test]
+    fn estimatefee_returns_unknown_before_first_update() {
+        let fee_rate = Arc::new(FeeRateState::new());
+        let value = handle_estimatefee(&json!([6]), &fee_rate).expect("estimate");
+        assert_eq!(value, json!(-1));
     }
 }
