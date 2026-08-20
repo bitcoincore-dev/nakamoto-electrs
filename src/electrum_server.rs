@@ -158,14 +158,7 @@ impl ElectrumServer {
                         .name(format!("electrum-{peer}"))
                         .spawn(move || {
                             if let Err(e) =
-                                handle_client(
-                                    stream,
-                                    &indexer,
-                                    &source,
-                                    &metrics,
-                                    broadcaster,
-                                    &fee_rate,
-                                )
+                                handle_client(stream, &indexer, Arc::clone(&source), &metrics, broadcaster, &fee_rate)
                             {
                                 debug!("client {peer} disconnected: {e:#}");
                             }
@@ -192,6 +185,8 @@ struct ClientState {
     subscribed_scripthashes: Vec<ScriptHash>,
     /// Last status sent to the client for each subscribed script hash.
     status_by_scripthash: HashMap<ScriptHash, Option<String>>,
+    /// Last headers.subscribe payload sent to the client.
+    header_subscription: Option<(u32, String)>,
 }
 
 impl ClientState {
@@ -199,14 +194,15 @@ impl ClientState {
         Self {
             subscribed_scripthashes: Vec::new(),
             status_by_scripthash: HashMap::new(),
+            header_subscription: None,
         }
     }
 }
 
-fn handle_client<S: BlockSource>(
+fn handle_client<S: BlockSource + Sync + 'static>(
     stream: TcpStream,
     indexer: &Indexer,
-    source: &S,
+    source: Arc<S>,
     metrics: &Metrics,
     broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
     fee_rate: &Arc<FeeRateState>,
@@ -220,6 +216,7 @@ fn handle_client<S: BlockSource>(
         let writer = Arc::clone(&writer);
         let indexer = indexer.clone();
         let state = Arc::clone(&state);
+        let source = Arc::clone(&source);
         thread::Builder::new()
             .name(format!("electrum-notify-{peer}"))
             .spawn(move || {
@@ -240,6 +237,32 @@ fn handle_client<S: BlockSource>(
                                     *entry = status.clone();
                                     changed.push((sh, status));
                                 }
+                            }
+                        }
+                        let current_headers = current_header_status(&indexer, source.as_ref()).ok().flatten();
+                        let mut send_header = false;
+                        {
+                            let mut state = state.lock().expect("electrum state poisoned");
+                            if state.header_subscription != current_headers {
+                                state.header_subscription = current_headers.clone();
+                                send_header = true;
+                            }
+                        }
+                        if send_header {
+                            let response = match current_headers {
+                                Some((height, hex)) => json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "blockchain.headers.subscribe",
+                                    "params": [{"height": height, "hex": hex}],
+                                }),
+                                None => json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "blockchain.headers.subscribe",
+                                    "params": [{"height": 0, "hex": ""}],
+                                }),
+                            };
+                            if write_json(&writer, &response).is_err() {
+                                break;
                             }
                         }
                         for (sh, status) in changed {
@@ -272,7 +295,7 @@ fn handle_client<S: BlockSource>(
                 &line,
                 &mut state,
                 indexer,
-                source,
+                source.as_ref(),
                 metrics,
                 broadcaster.as_ref(),
                 fee_rate,
@@ -363,18 +386,12 @@ fn handle_headers_subscribe<S: BlockSource>(
     indexer: &Indexer,
     source: &S,
 ) -> std::result::Result<Value, String> {
-    let height = indexer.tip_height();
-    match source.block_header(height) {
-        Ok(Some(header)) => {
-            let hex = serialize_hex(&header);
-            Ok(json!({"height": height, "hex": hex}))
-        }
-        Ok(None) => {
-            // Index hasn't processed any blocks yet.
-            Ok(json!({"height": 0, "hex": ""}))
-        }
-        Err(e) => Err(format!("block_header error: {e}")),
-    }
+    current_header_status(indexer, source)
+        .map(|opt| match opt {
+            Some((height, hex)) => json!({"height": height, "hex": hex}),
+            None => json!({"height": 0, "hex": ""}),
+        })
+        .map_err(|e| format!("block_header error: {e}"))
 }
 
 fn handle_scripthash_get_history(
@@ -583,6 +600,17 @@ fn compute_status_hash(history: &[crate::indexer::TxEntry]) -> Option<String> {
     Some(sha256::Hash::hash(data.as_bytes()).to_string())
 }
 
+fn current_header_status<S: BlockSource>(
+    indexer: &Indexer,
+    source: &S,
+) -> Result<Option<(u32, String)>> {
+    let height = indexer.tip_height();
+    match source.block_header(height)? {
+        Some(header) => Ok(Some((height, serialize_hex(&header)))),
+        None => Ok(None),
+    }
+}
+
 fn write_json(writer: &Arc<std::sync::Mutex<TcpStream>>, value: &Value) -> Result<()> {
     let mut writer = writer.lock().expect("electrum writer poisoned");
     let response_str = serde_json::to_string(value)? + "\n";
@@ -756,5 +784,39 @@ mod tests {
         assert!(resp.is_null());
         assert_eq!(state.subscribed_scripthashes.len(), 1);
         assert_eq!(state.status_by_scripthash.len(), 1);
+    }
+
+    #[test]
+    fn headers_subscribe_returns_current_tip_shape() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> {
+                crossbeam_channel::never()
+            }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                use bitcoin::hashes::Hash;
+                Ok((0, bitcoin::BlockHash::all_zeros()))
+            }
+            fn block_header(
+                &self,
+                _h: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(None)
+            }
+            fn block_by_hash(
+                &self,
+                _hash: &bitcoin::BlockHash,
+            ) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let resp = handle_headers_subscribe(&indexer, &FakeSource).expect("headers");
+        assert_eq!(resp["height"], json!(0));
     }
 }
