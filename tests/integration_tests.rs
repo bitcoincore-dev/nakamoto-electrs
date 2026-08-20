@@ -5,8 +5,7 @@
 //! functions in isolation.
 
 use nakamoto_electrs::{
-    Network,
-    block_reward_sats, format_fee_rate, is_halving_height, is_valid_script_hex,
+    Network, block_reward_sats, format_fee_rate, is_halving_height, is_valid_script_hex,
     saturating_sub, txid_to_electrum_bytes,
 };
 
@@ -120,7 +119,10 @@ fn fee_rate_format_two_decimal_places() {
     // "1.00 sat/vB" — exactly two digits after the decimal point.
     let s = format_fee_rate(1.0);
     let decimal_part = s.split('.').nth(1).unwrap_or("");
-    let digits: String = decimal_part.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = decimal_part
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     assert_eq!(digits.len(), 2);
 }
 
@@ -132,7 +134,10 @@ fn fee_rate_format_two_decimal_places() {
 fn halving_schedule_first_eight_events() {
     let expected_halving_heights: Vec<u32> = (1..=8).map(|n| n * 210_000).collect();
     for h in &expected_halving_heights {
-        assert!(is_halving_height(*h), "height {h} should be a halving height");
+        assert!(
+            is_halving_height(*h),
+            "height {h} should be a halving height"
+        );
     }
 }
 
@@ -152,7 +157,10 @@ fn total_supply_upper_bound() {
             reward.saturating_mul(210_000)
         })
         .sum();
-    assert!(total <= 2_100_000_000_000_000, "total {total} exceeds 21M BTC");
+    assert!(
+        total <= 2_100_000_000_000_000,
+        "total {total} exceeds 21M BTC"
+    );
 }
 
 // ---------------------------------------------------------------------------

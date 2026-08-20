@@ -4,7 +4,7 @@ use nakamoto_client::{Client, Config, Network};
 use nakamoto_net_poll::Reactor;
 use std::net::TcpStream;
 use std::thread;
-use tracing::{error, info, Level};
+use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
 type NodeReactor = Reactor<TcpStream>;
