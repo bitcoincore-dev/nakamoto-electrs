@@ -829,6 +829,40 @@ mod tests {
     }
 
     #[test]
+    fn transaction_get_returns_persisted_tx_hex() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51]),
+            }],
+        };
+        indexer.store_transaction(&tx).expect("store tx");
+
+        let resp = handle_transaction_get(&json!([tx.compute_txid().to_string()]), &indexer)
+            .expect("transaction get");
+        assert_eq!(resp, Value::String(serialize_hex(&tx)));
+    }
+
+    #[test]
+    fn transaction_get_missing_tx_fails() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let err = handle_transaction_get(&json!(["0".repeat(64)]), &indexer)
+            .expect_err("missing tx should fail");
+        assert!(err.contains("not in local cache"));
+    }
+
+    #[test]
     fn compute_status_hash_uses_electrum_format() {
         let txid = "0".repeat(64).parse().unwrap();
         let history = vec![crate::indexer::TxEntry {
