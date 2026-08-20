@@ -461,6 +461,7 @@ impl IndexState {
                 script_entries.retain(|e| e.height != height);
             }
             self.history.retain(|_, entries| !entries.is_empty());
+            self.rebuild_pending_view();
         }
         if self.tip_height == height {
             self.tip_height = height.saturating_sub(1);
