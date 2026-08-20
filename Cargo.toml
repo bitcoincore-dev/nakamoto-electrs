@@ -4,6 +4,11 @@ version = "0.0.2"
 edition = "2024"
 default-run = "nakamoto-electrs"
 
+[[bin]]
+name = "electrs"
+path = "src/bin/electrs.rs"
+required-features = ["electrs-bin"]
+
 [features]
 # Enable the standalone `electrs` binary (requires librocksdb at link time).
 electrs-bin = []
@@ -11,8 +16,8 @@ electrs-bin = []
 [dependencies]
 anyhow = "1.0"
 bitcoin = "0.32.102"
-crossbeam-channel = "0.5"
 clap = { version = "4.5", features = ["derive"] }
+crossbeam-channel = "0.5"
 electrs = { version = "0.10.10", default-features = false }
 hex = "0.4"
 nakamoto-chain = "0.4"
@@ -24,8 +29,3 @@ serde_json = "1.0"
 tokio = { version = "1.38", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-
-[[bin]]
-name = "electrs"
-path = "src/bin/electrs.rs"
-required-features = ["electrs-bin"]
