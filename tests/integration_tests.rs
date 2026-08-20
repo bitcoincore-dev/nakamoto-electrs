@@ -526,3 +526,56 @@ fn indexer_tracks_balance_and_spend_history() {
     assert_eq!(indexer.get_balance(&sh_of(&script_a)).unwrap(), 0);
     assert_eq!(indexer.get_history(&sh_of(&script_a)).len(), 2);
 }
+
+#[test]
+fn indexer_persists_history_balance_and_utxos_across_restart() {
+    let dir = tempdir().expect("temp index dir").keep();
+    let script_a = p2pkh_script();
+    let script_b = mock::op_return_script(0x33);
+
+    let indexer_thread = {
+        let source = mock::MockBlockSource::new();
+        let indexer = Indexer::new(dir.clone(), Metrics::new()).expect("indexer");
+        let handle = indexer.clone().start(&source);
+
+        let block1 = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script_a.clone()]);
+        let fund_txid = block1.txdata[0].compute_txid();
+        let fund_outpoint = bitcoin::OutPoint::new(fund_txid, 0);
+        source.push(BlockEvent::Connected {
+            block: block1,
+            height: 1,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let spend_tx = mock::make_spend_tx(fund_outpoint, vec![(900, script_b.clone())]);
+        let block2 = mock::make_block_with_txs(bitcoin::BlockHash::all_zeros(), 2, vec![spend_tx]);
+        source.push(BlockEvent::Connected {
+            block: block2,
+            height: 2,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let sh_a = sh_of(&script_a);
+        let sh_b = sh_of(&script_b);
+        assert_eq!(indexer.get_balance(&sh_a).unwrap(), 0);
+        assert!(indexer.list_unspent(&sh_a).unwrap().is_empty());
+        assert_eq!(indexer.get_balance(&sh_b).unwrap(), 900);
+        assert_eq!(indexer.list_unspent(&sh_b).unwrap().len(), 1);
+        assert_eq!(indexer.get_history(&sh_a).len(), 2);
+        assert_eq!(indexer.get_history(&sh_b).len(), 1);
+        handle
+    };
+
+    indexer_thread.join().expect("indexer thread");
+
+    let reopened = Indexer::new(dir, Metrics::new()).expect("reopened indexer");
+
+    let sh_a = sh_of(&script_a);
+    let sh_b = sh_of(&script_b);
+    assert_eq!(reopened.get_balance(&sh_a).unwrap(), 0);
+    assert!(reopened.list_unspent(&sh_a).unwrap().is_empty());
+    assert_eq!(reopened.get_balance(&sh_b).unwrap(), 900);
+    assert_eq!(reopened.list_unspent(&sh_b).unwrap().len(), 1);
+    assert_eq!(reopened.get_history(&sh_a).len(), 2);
+    assert_eq!(reopened.get_history(&sh_b).len(), 1);
+}
