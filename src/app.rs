@@ -124,5 +124,5 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
 }
 
 pub fn run_electrs() -> Result<()> {
-    electrs::run().map_err(Into::into)
+    electrs::run()
 }
