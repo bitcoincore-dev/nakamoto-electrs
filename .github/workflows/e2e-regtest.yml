@@ -343,9 +343,14 @@ jobs:
           fi
 
           set +e
+          ELECTRS_CONF="$RUNNER_TEMP/electrs-regtest.toml"
+          cat > "$ELECTRS_CONF" <<EOF
+network = "regtest"
+daemon_dir = "$HOME/.bitcoin-stable"
+auth = "${BITCOIND_RPC_USER}:${BITCOIND_RPC_PASS}"
+EOF
           timeout 10s cargo run --features electrs-bin --example electrs -- \
-            --network regtest \
-            --daemon-dir "$HOME/.bitcoin-stable"
+            --conf "$ELECTRS_CONF"
           status=$?
           set -e
           if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
