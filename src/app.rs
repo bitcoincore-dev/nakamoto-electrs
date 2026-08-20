@@ -61,7 +61,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
 
     let metrics = Metrics::new();
     let source = Arc::new(NakamotoBlockSource::new(handle.clone()));
-    let indexer = Indexer::new(metrics.clone());
+    let indexer = Indexer::new(cfg.index_dir.clone(), metrics.clone())?;
 
     let _indexer_thread = indexer.clone().start(source.as_ref());
 

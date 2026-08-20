@@ -9,6 +9,7 @@ pub mod electrum_server;
 pub mod indexer;
 pub mod metrics;
 pub mod nakamoto_source;
+pub mod store;
 
 // ---------------------------------------------------------------------------
 // Utility functions (used by tests and downstream)

@@ -134,10 +134,10 @@ cargo test --test e2e_regtest -- --ignored
 
 ## Known limitations
 
-* **No UTXO set** — `blockchain.transaction.get` and spending-input indexing
-  require a UTXO database that is not yet implemented.
-* **In-memory index** — the index is not persisted across restarts.  A future
-  version will use RocksDB.
+* **No UTXO set** — spending-input indexing and accurate balance tracking
+  still require a UTXO database.
+* **Persistent index** — history and raw transaction lookups survive restarts
+  via the embedded store.  A future version will add a UTXO database.
 * **No transaction broadcast** — `blockchain.transaction.broadcast` parses and
   validates the transaction but does not yet forward it to the nakamoto handle.
 * **nakamoto is SPV** — nakamoto downloads compact block filters (BIP 157/158)

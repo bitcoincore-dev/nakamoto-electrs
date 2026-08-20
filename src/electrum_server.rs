@@ -201,7 +201,7 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.scripthash.get_history" => handle_scripthash_get_history(&params, indexer),
         "blockchain.scripthash.get_balance" => handle_scripthash_get_balance(&params, indexer),
         "blockchain.scripthash.subscribe" => handle_scripthash_subscribe(&params, state, indexer),
-        "blockchain.transaction.get" => handle_transaction_get(&params, source),
+        "blockchain.transaction.get" => handle_transaction_get(&params, indexer),
         "blockchain.transaction.broadcast" => handle_transaction_broadcast(&params, metrics),
         "blockchain.estimatefee" => handle_estimatefee(&params),
         "blockchain.block.header" => handle_block_header(&params, source),
@@ -303,23 +303,17 @@ fn handle_scripthash_subscribe(
     }
 }
 
-fn handle_transaction_get<S: BlockSource>(
-    params: &Value,
-    source: &S,
-) -> std::result::Result<Value, String> {
+fn handle_transaction_get(params: &Value, indexer: &Indexer) -> std::result::Result<Value, String> {
     let txid_str = params
         .get(0)
         .and_then(Value::as_str)
         .ok_or("missing txid parameter")?;
     let txid: bitcoin::Txid = txid_str.parse().map_err(|e| format!("invalid txid: {e}"))?;
-
-    // We don't maintain a txid → block-hash lookup table yet; return an error
-    // indicating the tx is not in the local cache.  A future improvement would
-    // add a txid → raw-tx map to the index.
-    let _ = (txid, source);
-    Err(format!(
-        "transaction {txid_str} not in local cache; full UTXO index not yet implemented"
-    ))
+    match indexer.get_transaction(&txid) {
+        Ok(Some(tx)) => Ok(Value::String(serialize_hex(&tx))),
+        Ok(None) => Err(format!("transaction {txid_str} not in local cache")),
+        Err(e) => Err(format!("transaction lookup failed: {e:#}")),
+    }
 }
 
 fn handle_transaction_broadcast(
@@ -479,7 +473,8 @@ mod tests {
             }
         }
 
-        let indexer = Indexer::new(Metrics::new());
+        let dir = tempfile::tempdir().expect("temp index dir").into_path();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
         let source = FakeSource;
         let mut state = ClientState::new();
         let raw = r#"{"jsonrpc":"2.0","id":1,"method":"server.ping","params":[]}"#;

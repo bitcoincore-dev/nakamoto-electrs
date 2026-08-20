@@ -8,6 +8,9 @@ use nakamoto_electrs::{
     Network, block_reward_sats, format_fee_rate, is_halving_height, is_valid_script_hex,
     saturating_sub, txid_to_electrum_bytes,
 };
+use nakamoto_electrs::indexer::Indexer;
+use nakamoto_electrs::metrics::Metrics;
+use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Network round-trip
@@ -306,10 +309,15 @@ fn sh_of(script: &bitcoin::ScriptBuf) -> ScriptHash {
     ScriptHash::from_script(script)
 }
 
+fn make_indexer(metrics: Metrics) -> Indexer {
+    let dir = tempdir().expect("temp index dir").into_path();
+    Indexer::new(dir, metrics).expect("indexer")
+}
+
 #[test]
 fn indexer_processes_block_from_mock_source() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     let script = p2pkh_script();
@@ -332,7 +340,7 @@ fn indexer_processes_block_from_mock_source() {
 #[test]
 fn indexer_rollback_on_disconnected_event() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     let script = p2pkh_script();
@@ -365,7 +373,7 @@ fn indexer_rollback_on_disconnected_event() {
 #[test]
 fn indexer_reorg_replaces_history() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     let script_a = mock::op_return_script(0xAA);
@@ -409,7 +417,7 @@ fn indexer_reorg_replaces_history() {
 #[test]
 fn indexer_tip_height_advances() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     for h in 1u32..=5 {
@@ -429,7 +437,7 @@ fn indexer_tip_height_advances() {
 fn metrics_track_indexed_blocks() {
     let metrics = Metrics::new();
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(metrics.clone());
+    let indexer = make_indexer(metrics.clone());
     let _handle = indexer.clone().start(&source);
 
     for i in 0u8..3 {
@@ -453,7 +461,7 @@ fn metrics_track_indexed_blocks() {
 fn metrics_track_rolled_back_blocks() {
     let metrics = Metrics::new();
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(metrics.clone());
+    let indexer = make_indexer(metrics.clone());
     let _handle = indexer.clone().start(&source);
 
     let block = mock::make_block(

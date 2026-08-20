@@ -36,6 +36,7 @@ use nakamoto_electrs::block_source::{BlockEvent, BlockSource};
 use nakamoto_electrs::electrum_server::ElectrumServer;
 use nakamoto_electrs::indexer::Indexer;
 use nakamoto_electrs::metrics::Metrics;
+use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Helpers shared by all tests in this file
@@ -75,7 +76,8 @@ impl BlockSource for StubSource {
 /// background thread.  Returns the bound `SocketAddr`.
 fn start_electrum_server() -> SocketAddr {
     let metrics = Metrics::new();
-    let indexer = Indexer::new(metrics.clone());
+    let dir = tempdir().expect("temp index dir").into_path();
+    let indexer = Indexer::new(dir, metrics.clone()).expect("indexer");
 
     // Port 0 lets the OS pick a free port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

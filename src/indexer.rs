@@ -1,38 +1,27 @@
-//! Script-hash indexer — maintains an in-memory map from Electrum script hash
-//! to transaction history, driven by the [`BlockSource`] event stream.
+//! Script-hash indexer backed by an embedded persistent store.
+//!
+//! The in-memory cache is kept for fast reads, but all indexed history and raw
+//! transactions are also mirrored to disk so the index survives restarts.
 //!
 //! ## Electrum script hash
 //!
 //! The Electrum protocol identifies addresses by the *script hash*: the
 //! SHA-256 digest of the scriptPubKey bytes, with the bytes stored in
 //! **reversed** (little-endian) order.
-//!
-//! ## Index layout
-//!
-//! For each script hash the index stores a chronologically-ordered list of
-//! [`TxEntry`] records.  Each entry carries the txid and the height at which
-//! the transaction was confirmed (or 0 for unconfirmed).
-//!
-//! For fast reverse lookup (needed for reorg rollback) the index also
-//! maintains a map from block height to the list of (script_hash, txid) pairs
-//! indexed at that height.
-//!
-//! ## Reorg handling
-//!
-//! On [`BlockEvent::Disconnected`] the indexer removes every entry that was
-//! indexed at the disconnected height, bounded by the configured
-//! `max_reorg_depth`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::thread;
 
+use anyhow::Result;
 use bitcoin::hashes::{Hash, sha256};
-use bitcoin::{Block, Script, Txid};
+use bitcoin::{Block, Script, Transaction, Txid};
 use tracing::{debug, info, warn};
 
 use crate::block_source::{BlockEvent, BlockSource};
 use crate::metrics::Metrics;
+use crate::store::PersistentIndex;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,9 +52,6 @@ impl ScriptHash {
     }
 
     /// Construct directly from raw bytes.
-    ///
-    /// Intended for use when the bytes are already in the correct
-    /// (reversed, little-endian) Electrum format.
     pub fn from_raw_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -86,61 +72,75 @@ pub struct TxEntry {
     pub height: u32,
 }
 
-// ---------------------------------------------------------------------------
-// Inner index state (behind RwLock)
-// ---------------------------------------------------------------------------
-
 struct IndexState {
-    /// script_hash → ordered history entries.
     history: HashMap<ScriptHash, Vec<TxEntry>>,
-    /// height → list of (script_hash, txid) pairs indexed at that height.
-    /// Used for efficient rollback.
-    by_height: HashMap<u32, Vec<(ScriptHash, Txid)>>,
-    /// Current best-chain tip height.
+    by_height: HashMap<u32, Vec<(ScriptHash, Txid, Vec<u8>)>>,
     tip_height: u32,
+    store: PersistentIndex,
 }
 
 impl IndexState {
-    fn new() -> Self {
-        Self {
+    fn new(index_dir: PathBuf) -> Result<Self> {
+        let store = PersistentIndex::open(index_dir)?;
+        let tip_height = store.tip_height();
+        let mut state = Self {
             history: HashMap::new(),
             by_height: HashMap::new(),
-            tip_height: 0,
-        }
+            tip_height,
+            store,
+        };
+        state.load_history_from_store()?;
+        Ok(state)
     }
 
-    /// Index all outputs of every transaction in `block`.
-    fn apply_block(&mut self, block: &Block, height: u32) {
+    fn load_history_from_store(&mut self) -> Result<()> {
+        for entry in self.store.load_history_entries()? {
+            self.history
+                .entry(entry.script_hash)
+                .or_default()
+                .push(TxEntry {
+                    txid: entry.txid,
+                    height: entry.height,
+                });
+            self.by_height.entry(entry.height).or_default().push((
+                entry.script_hash,
+                entry.txid,
+                entry.history_key,
+            ));
+        }
+        Ok(())
+    }
+
+    fn apply_block(&mut self, block: &Block, height: u32) -> Result<()> {
         for tx in &block.txdata {
             let txid = tx.compute_txid();
-            for output in &tx.output {
+            self.store.store_tx(tx)?;
+            for (output_index, output) in tx.output.iter().enumerate() {
                 let sh = ScriptHash::from_script(&output.script_pubkey);
                 let entry = TxEntry { txid, height };
                 self.history.entry(sh).or_default().push(entry);
-                self.by_height.entry(height).or_default().push((sh, txid));
-            }
-            // Also index spending inputs (skip coinbase).
-            if !tx.is_coinbase() {
-                for input in &tx.input {
-                    // We don't have the scriptPubKey of the spent output here,
-                    // so we can't compute the script hash of the spent address
-                    // without a UTXO set.  The Electrum protocol requires this
-                    // for `get_history`, so this is noted as a future
-                    // improvement when a UTXO set is available.
-                    let _ = input; // suppress unused warning
-                }
+                let history_key =
+                    self.store
+                        .store_history_entry(sh, height, txid, output_index as u32)?;
+                self.by_height
+                    .entry(height)
+                    .or_default()
+                    .push((sh, txid, history_key));
             }
         }
         self.tip_height = height;
+        self.store.set_tip_height(height)?;
+        Ok(())
     }
 
-    /// Roll back all entries indexed at `height`.
-    fn rollback_height(&mut self, height: u32) {
-        if let Some(pairs) = self.by_height.remove(&height) {
-            for (sh, txid) in pairs {
-                if let Some(entries) = self.history.get_mut(&sh) {
-                    entries.retain(|e| !(e.txid == txid && e.height == height));
-                    if entries.is_empty() {
+    fn rollback_height(&mut self, height: u32) -> Result<()> {
+        if let Some(entries) = self.by_height.remove(&height) {
+            for (sh, txid, history_key) in entries.into_iter().rev() {
+                self.store.delete_history_key(&history_key)?;
+                self.store.delete_tx(&txid)?;
+                if let Some(script_entries) = self.history.get_mut(&sh) {
+                    script_entries.retain(|e| !(e.txid == txid && e.height == height));
+                    if script_entries.is_empty() {
                         self.history.remove(&sh);
                     }
                 }
@@ -148,21 +148,31 @@ impl IndexState {
         }
         if self.tip_height == height {
             self.tip_height = height.saturating_sub(1);
+            self.store.set_tip_height(self.tip_height)?;
         }
+        Ok(())
+    }
+
+    fn get_history(&self, sh: &ScriptHash) -> Vec<TxEntry> {
+        let mut entries = self.history.get(sh).cloned().unwrap_or_default();
+        entries.sort_by_key(|e| if e.height == 0 { u32::MAX } else { e.height });
+        entries
+    }
+
+    fn has_history(&self, sh: &ScriptHash) -> bool {
+        self.history.contains_key(sh)
+    }
+
+    fn tip_height(&self) -> u32 {
+        self.tip_height
+    }
+
+    fn get_transaction(&self, txid: &Txid) -> Result<Option<Transaction>> {
+        self.store.load_tx(txid)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Indexer
-// ---------------------------------------------------------------------------
-
 /// The block-chain indexer.
-///
-/// Listens to a [`BlockSource`] subscription and maintains a script-hash →
-/// transaction-history map that the Electrum server queries.
-///
-/// The index runs in a background thread started by [`Indexer::start`].
-/// All query methods are safe to call from any thread concurrently.
 #[derive(Clone)]
 pub struct Indexer {
     state: Arc<RwLock<IndexState>>,
@@ -170,18 +180,16 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    /// Create a new, empty indexer.
-    pub fn new(metrics: Metrics) -> Self {
-        Self {
-            state: Arc::new(RwLock::new(IndexState::new())),
+    /// Create a new indexer rooted at `index_dir`.
+    pub fn new(index_dir: PathBuf, metrics: Metrics) -> Result<Self> {
+        Ok(Self {
+            state: Arc::new(RwLock::new(IndexState::new(index_dir)?)),
             metrics,
-        }
+        })
     }
 
     /// Start the indexer event loop in a background thread, consuming events
     /// from `source`.
-    ///
-    /// The returned [`thread::JoinHandle`] can be used to await termination.
     pub fn start<S: BlockSource>(self, source: &S) -> thread::JoinHandle<()> {
         let rx = source.subscribe();
         let state = Arc::clone(&self.state);
@@ -194,20 +202,28 @@ impl Indexer {
                     match event {
                         BlockEvent::Connected { block, height } => {
                             debug!("indexer: apply block h={height}");
-                            {
+                            let result = {
                                 let mut s = state.write().expect("index write lock poisoned");
-                                s.apply_block(&block, height);
+                                s.apply_block(&block, height)
+                            };
+                            match result {
+                                Ok(()) => {
+                                    metrics.inc_blocks_indexed();
+                                    info!("indexed block h={height} txs={}", block.txdata.len());
+                                }
+                                Err(e) => warn!("failed to persist indexed block h={height}: {e:#}"),
                             }
-                            metrics.inc_blocks_indexed();
-                            info!("indexed block h={height} txs={}", block.txdata.len());
                         }
                         BlockEvent::Disconnected { hash, height } => {
                             warn!("indexer: rollback h={height} ({hash})");
-                            {
+                            let result = {
                                 let mut s = state.write().expect("index write lock poisoned");
-                                s.rollback_height(height);
+                                s.rollback_height(height)
+                            };
+                            match result {
+                                Ok(()) => metrics.inc_blocks_rolled_back(),
+                                Err(e) => warn!("failed to rollback block h={height}: {e:#}"),
                             }
-                            metrics.inc_blocks_rolled_back();
                         }
                         BlockEvent::Synced { height, tip } => {
                             info!("indexer: chain synced at h={height} tip={tip}");
@@ -219,31 +235,27 @@ impl Indexer {
             .expect("failed to spawn indexer thread")
     }
 
-    // ---- Query interface used by the Electrum server ----------------------
-
     /// Return the transaction history for a script hash.
-    ///
-    /// Results are ordered by ascending block height (unconfirmed entries
-    /// last with height = 0).
     pub fn get_history(&self, sh: &ScriptHash) -> Vec<TxEntry> {
-        let s = self.state.read().expect("index read lock poisoned");
-        let mut entries = s.history.get(sh).cloned().unwrap_or_default();
-        entries.sort_by_key(|e| if e.height == 0 { u32::MAX } else { e.height });
-        entries
+        self.state.read().expect("index read lock poisoned").get_history(sh)
     }
 
     /// Return the current best-chain tip height known to the indexer.
     pub fn tip_height(&self) -> u32 {
-        self.state
-            .read()
-            .expect("index read lock poisoned")
-            .tip_height
+        self.state.read().expect("index read lock poisoned").tip_height()
     }
 
     /// Returns `true` when the given script hash has any history.
     pub fn has_history(&self, sh: &ScriptHash) -> bool {
-        let s = self.state.read().expect("index read lock poisoned");
-        s.history.contains_key(sh)
+        self.state.read().expect("index read lock poisoned").has_history(sh)
+    }
+
+    /// Return a raw transaction by txid, if it has been indexed.
+    pub fn get_transaction(&self, txid: &Txid) -> Result<Option<Transaction>> {
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .get_transaction(txid)
     }
 }
 
@@ -256,15 +268,17 @@ mod tests {
     use super::*;
     use bitcoin::hashes::Hash;
     use bitcoin::{
-        BlockHash, CompactTarget,
-        absolute::LockTime,
-        blockdata::{
+        BlockHash, CompactTarget, absolute::LockTime, blockdata::{
             block::{Header as BlockHeader, Version},
             script::Builder,
             transaction::{Transaction, TxOut},
-        },
-        hash_types::TxMerkleNode,
+        }, hash_types::TxMerkleNode,
     };
+
+    fn make_state() -> IndexState {
+        let dir = tempfile::tempdir().expect("temp dir").into_path();
+        IndexState::new(dir).expect("state")
+    }
 
     fn make_block(height: u32, scripts: Vec<Vec<u8>>) -> Block {
         let txouts: Vec<TxOut> = scripts
@@ -293,14 +307,10 @@ mod tests {
             bits: CompactTarget::from_consensus(0x1d00ffff),
             nonce: 0,
         };
-        Block {
-            header,
-            txdata: vec![tx],
-        }
+        Block { header, txdata: vec![tx] }
     }
 
     fn p2pkh_script() -> Vec<u8> {
-        // OP_DUP OP_HASH160 <20 zero bytes> OP_EQUALVERIFY OP_CHECKSIG
         let mut s = vec![0x76u8, 0xa9, 0x14];
         s.extend_from_slice(&[0u8; 20]);
         s.extend_from_slice(&[0x88, 0xac]);
@@ -309,11 +319,10 @@ mod tests {
 
     #[test]
     fn apply_and_query_block() {
-        let _metrics = Metrics::new();
-        let mut state = IndexState::new();
+        let mut state = make_state();
         let script = p2pkh_script();
         let block = make_block(1, vec![script.clone()]);
-        state.apply_block(&block, 1);
+        state.apply_block(&block, 1).expect("apply");
 
         let sh = ScriptHash::from_script(&Builder::from(script.clone()).into_script());
         assert!(state.history.contains_key(&sh));
@@ -324,36 +333,32 @@ mod tests {
 
     #[test]
     fn rollback_removes_entries() {
-        let mut state = IndexState::new();
+        let mut state = make_state();
         let script = p2pkh_script();
         let block = make_block(1, vec![script.clone()]);
-        state.apply_block(&block, 1);
+        state.apply_block(&block, 1).expect("apply");
 
         let sh = ScriptHash::from_script(&Builder::from(script).into_script());
         assert!(state.history.contains_key(&sh));
 
-        state.rollback_height(1);
+        state.rollback_height(1).expect("rollback");
         assert!(!state.history.contains_key(&sh));
     }
 
     #[test]
     fn rollback_only_removes_target_height() {
-        let mut state = IndexState::new();
+        let mut state = make_state();
         let s1 = p2pkh_script();
-        // Second script: OP_RETURN (different from s1)
         let s2 = vec![0x6au8];
         let b1 = make_block(1, vec![s1.clone()]);
         let b2 = make_block(2, vec![s2.clone()]);
-        state.apply_block(&b1, 1);
-        state.apply_block(&b2, 2);
+        state.apply_block(&b1, 1).expect("apply b1");
+        state.apply_block(&b2, 2).expect("apply b2");
 
-        state.rollback_height(1);
+        state.rollback_height(1).expect("rollback");
 
         let sh2 = ScriptHash::from_script(&Builder::from(s2).into_script());
-        assert!(
-            state.history.contains_key(&sh2),
-            "height-2 entry should survive"
-        );
+        assert!(state.history.contains_key(&sh2), "height-2 entry should survive");
     }
 
     #[test]
@@ -370,10 +375,20 @@ mod tests {
 
     #[test]
     fn indexer_tip_tracks_latest_block() {
-        let mut state = IndexState::new();
-        state.apply_block(&make_block(5, vec![p2pkh_script()]), 5);
+        let mut state = make_state();
+        state.apply_block(&make_block(5, vec![p2pkh_script()]), 5).expect("apply 5");
         assert_eq!(state.tip_height, 5);
-        state.apply_block(&make_block(6, vec![p2pkh_script()]), 6);
+        state.apply_block(&make_block(6, vec![p2pkh_script()]), 6).expect("apply 6");
         assert_eq!(state.tip_height, 6);
+    }
+
+    #[test]
+    fn persisted_transaction_round_trips() {
+        let mut state = make_state();
+        let block = make_block(1, vec![p2pkh_script()]);
+        let txid = block.txdata[0].compute_txid();
+        state.apply_block(&block, 1).expect("apply");
+        let tx = state.get_transaction(&txid).expect("query tx");
+        assert!(tx.is_some());
     }
 }
