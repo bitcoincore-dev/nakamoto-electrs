@@ -344,11 +344,20 @@ jobs:
 
           set +e
           ELECTRS_CONF="$RUNNER_TEMP/electrs-regtest.toml"
-          cat > "$ELECTRS_CONF" <<EOF
-network = "regtest"
-daemon_dir = "$HOME/.bitcoin-stable"
-auth = "${BITCOIND_RPC_USER}:${BITCOIND_RPC_PASS}"
-EOF
+          python3 - "$ELECTRS_CONF" "$HOME/.bitcoin-stable" "${BITCOIND_RPC_USER}" "${BITCOIND_RPC_PASS}" <<'PY'
+          from pathlib import Path
+          import sys
+
+          config_path = Path(sys.argv[1])
+          daemon_dir = sys.argv[2]
+          rpc_user = sys.argv[3]
+          rpc_pass = sys.argv[4]
+          config_path.write_text(
+              f'network = "regtest"\n'
+              f'daemon_dir = "{daemon_dir}"\n'
+              f'auth = "{rpc_user}:{rpc_pass}"\n'
+          )
+          PY
           timeout 10s cargo run --features electrs-bin --example electrs -- \
             --conf "$ELECTRS_CONF"
           status=$?
