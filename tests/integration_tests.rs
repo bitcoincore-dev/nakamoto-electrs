@@ -176,3 +176,294 @@ fn saturating_sub_zero_minus_large() {
 fn saturating_sub_max_minus_zero() {
     assert_eq!(saturating_sub(u64::MAX, 0), u64::MAX);
 }
+
+// ---------------------------------------------------------------------------
+// MockBlockSource + Indexer integration
+// ---------------------------------------------------------------------------
+
+mod mock {
+    //! In-process block source for testing — drives the indexer with
+    //! deterministic, hand-crafted blocks.
+
+    use anyhow::Result;
+    use bitcoin::{
+        Block, BlockHash,
+        blockdata::block::Header as BlockHeader,
+        absolute::LockTime,
+        blockdata::{
+            block::Version,
+            script::Builder,
+            transaction::{Transaction, TxIn, TxOut},
+        },
+        hash_types::TxMerkleNode,
+        hashes::Hash,
+        CompactTarget, OutPoint, ScriptBuf, Sequence, Witness,
+    };
+    use crossbeam_channel::{Receiver, Sender, unbounded};
+    use std::sync::{Arc, Mutex};
+
+    use nakamoto_electrs::block_source::{BlockEvent, BlockSource};
+
+    // Simple OP_RETURN script so every block/test can have a unique scriptPubKey.
+    pub fn op_return_script(tag: u8) -> ScriptBuf {
+        Builder::new()
+            .push_opcode(bitcoin::blockdata::opcodes::all::OP_RETURN)
+            .push_slice(&[tag])
+            .into_script()
+    }
+
+    pub fn make_tx(scripts: Vec<ScriptBuf>) -> Transaction {
+        let outputs = scripts
+            .into_iter()
+            .map(|s| TxOut { value: 1000u64, script_pubkey: s })
+            .collect();
+        Transaction {
+            version: 1i32,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: outputs,
+        }
+    }
+
+    pub fn make_block(prev: BlockHash, height: u32, scripts: Vec<ScriptBuf>) -> Block {
+        let tx = make_tx(scripts);
+        let header = BlockHeader {
+            version: Version::ONE,
+            prev_blockhash: prev,
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: height,
+            bits: CompactTarget::from_consensus(0x1d00ffff),
+            nonce: height, // differentiate blocks by nonce
+        };
+        Block { header, txdata: vec![tx] }
+    }
+
+    /// A [`BlockSource`] that replays pre-built events from a channel.
+    pub struct MockBlockSource {
+        senders: Arc<Mutex<Vec<Sender<BlockEvent>>>>,
+    }
+
+    impl MockBlockSource {
+        pub fn new() -> Self {
+            Self {
+                senders: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        /// Push an event to all current subscribers.
+        pub fn push(&self, event: BlockEvent) {
+            let mut guard = self.senders.lock().unwrap();
+            guard.retain(|tx| tx.send(event.clone()).is_ok());
+        }
+    }
+
+    impl BlockSource for MockBlockSource {
+        fn subscribe(&self) -> Receiver<BlockEvent> {
+            let (tx, rx) = unbounded();
+            self.senders.lock().unwrap().push(tx);
+            rx
+        }
+
+        fn tip(&self) -> Result<(u32, BlockHash)> {
+            Ok((0, BlockHash::all_zeros()))
+        }
+
+        fn block_header(&self, _h: u32) -> Result<Option<BlockHeader>> {
+            Ok(None)
+        }
+
+        fn block_by_hash(&self, _hash: &BlockHash) -> Result<Option<Block>> {
+            Ok(None)
+        }
+    }
+}
+
+use bitcoin::{blockdata::script::Builder, hashes::Hash};
+use nakamoto_electrs::{
+    block_source::BlockEvent,
+    indexer::{Indexer, ScriptHash},
+    metrics::Metrics,
+};
+
+fn p2pkh_script() -> bitcoin::ScriptBuf {
+    let mut s = vec![0x76u8, 0xa9, 0x14];
+    s.extend_from_slice(&[0u8; 20]);
+    s.extend_from_slice(&[0x88, 0xac]);
+    Builder::from(s).into_script()
+}
+
+fn sh_of(script: &bitcoin::ScriptBuf) -> ScriptHash {
+    ScriptHash::from_script(script)
+}
+
+#[test]
+fn indexer_processes_block_from_mock_source() {
+    let source = mock::MockBlockSource::new();
+    let indexer = Indexer::new(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script = p2pkh_script();
+    let block = mock::make_block(
+        bitcoin::BlockHash::all_zeros(),
+        1,
+        vec![script.clone()],
+    );
+
+    source.push(BlockEvent::Connected {
+        block: block.clone(),
+        height: 1,
+    });
+
+    // Give the indexer thread time to process.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let sh = sh_of(&script);
+    let history = indexer.get_history(&sh);
+    assert_eq!(history.len(), 1, "expected one history entry");
+    assert_eq!(history[0].height, 1);
+}
+
+#[test]
+fn indexer_rollback_on_disconnected_event() {
+    let source = mock::MockBlockSource::new();
+    let indexer = Indexer::new(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script = p2pkh_script();
+    let block = mock::make_block(
+        bitcoin::BlockHash::all_zeros(),
+        5,
+        vec![script.clone()],
+    );
+    let block_hash = block.block_hash();
+
+    // Connect the block.
+    source.push(BlockEvent::Connected {
+        block,
+        height: 5,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let sh = sh_of(&script);
+    assert!(!indexer.get_history(&sh).is_empty(), "should have history after connect");
+
+    // Disconnect it.
+    source.push(BlockEvent::Disconnected {
+        hash: block_hash,
+        height: 5,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert!(
+        indexer.get_history(&sh).is_empty(),
+        "history should be empty after rollback"
+    );
+}
+
+#[test]
+fn indexer_reorg_replaces_history() {
+    let source = mock::MockBlockSource::new();
+    let indexer = Indexer::new(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script_a = mock::op_return_script(0xAA);
+    let script_b = mock::op_return_script(0xBB);
+
+    let block_a = mock::make_block(
+        bitcoin::BlockHash::all_zeros(),
+        10,
+        vec![script_a.clone()],
+    );
+    let hash_a = block_a.block_hash();
+
+    // Connect block A.
+    source.push(BlockEvent::Connected { block: block_a, height: 10 });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert!(indexer.has_history(&sh_of(&script_a)));
+    assert!(!indexer.has_history(&sh_of(&script_b)));
+
+    // Reorg: disconnect A, connect B at the same height.
+    source.push(BlockEvent::Disconnected { hash: hash_a, height: 10 });
+    let block_b = mock::make_block(
+        bitcoin::BlockHash::all_zeros(),
+        10,
+        vec![script_b.clone()],
+    );
+    source.push(BlockEvent::Connected { block: block_b, height: 10 });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert!(
+        !indexer.has_history(&sh_of(&script_a)),
+        "old history should be gone after reorg"
+    );
+    assert!(
+        indexer.has_history(&sh_of(&script_b)),
+        "new history should exist after reorg"
+    );
+}
+
+#[test]
+fn indexer_tip_height_advances() {
+    let source = mock::MockBlockSource::new();
+    let indexer = Indexer::new(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    for h in 1u32..=5 {
+        let block = mock::make_block(
+            bitcoin::BlockHash::all_zeros(),
+            h,
+            vec![mock::op_return_script(h as u8)],
+        );
+        source.push(BlockEvent::Connected { block, height: h });
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    assert_eq!(indexer.tip_height(), 5);
+}
+
+#[test]
+fn metrics_track_indexed_blocks() {
+    let metrics = Metrics::new();
+    let source = mock::MockBlockSource::new();
+    let indexer = Indexer::new(metrics.clone());
+    let _handle = indexer.clone().start(&source);
+
+    for i in 0u8..3 {
+        let block = mock::make_block(
+            bitcoin::BlockHash::all_zeros(),
+            i as u32 + 1,
+            vec![mock::op_return_script(i)],
+        );
+        source.push(BlockEvent::Connected { block, height: i as u32 + 1 });
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    assert_eq!(metrics.blocks_indexed(), 3);
+    assert_eq!(metrics.blocks_rolled_back(), 0);
+}
+
+#[test]
+fn metrics_track_rolled_back_blocks() {
+    let metrics = Metrics::new();
+    let source = mock::MockBlockSource::new();
+    let indexer = Indexer::new(metrics.clone());
+    let _handle = indexer.clone().start(&source);
+
+    let block = mock::make_block(
+        bitcoin::BlockHash::all_zeros(),
+        1,
+        vec![mock::op_return_script(0x01)],
+    );
+    let hash = block.block_hash();
+    source.push(BlockEvent::Connected { block, height: 1 });
+    source.push(BlockEvent::Disconnected { hash, height: 1 });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    assert_eq!(metrics.blocks_rolled_back(), 1);
+}
