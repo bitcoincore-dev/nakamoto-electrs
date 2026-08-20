@@ -343,7 +343,9 @@ jobs:
           fi
 
           set +e
-          timeout 10s cargo run --features electrs-bin --example electrs
+          timeout 10s cargo run --features electrs-bin --example electrs -- \
+            --network regtest \
+            --daemon-dir "$HOME/.bitcoin-stable"
           status=$?
           set -e
           if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
