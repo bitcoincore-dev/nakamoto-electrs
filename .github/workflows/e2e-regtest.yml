@@ -124,14 +124,42 @@ jobs:
             getblockchaininfo
 
       # ---------------------------------------------------------------------------
-      # Build the project and compile the placeholder e2e regtest target
+      # Build the project and run the e2e regtest tests
       # ---------------------------------------------------------------------------
       - name: cargo build
         run: cargo build --all-targets
 
-      - name: Build the e2e regtest test target
+      - name: Exercise all bins
         run: |
-          cargo build --test e2e_regtest
+          set -euo pipefail
+
+          # Main bridge binary on regtest (expects to keep running until timeout).
+          set +e
+          timeout 20s cargo run --bin nakamoto-electrs -- \
+            --network regtest \
+            --peer 127.0.0.1:18444 \
+            --listen 127.0.0.1:60401
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+            exit "$status"
+          fi
+
+          # Standalone nakamoto binary (long-running service; timeout is expected).
+          set +e
+          timeout 10s cargo run --bin nakamoto
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+            exit "$status"
+          fi
+
+          # Standalone electrs binary (feature-gated).
+          cargo run --features electrs-bin --bin electrs -- --help
+
+      - name: Run e2e regtest tests (nocapture)
+        run: |
+          cargo test --test e2e_regtest -- --ignored --nocapture
 
       # ---------------------------------------------------------------------------
       # Cleanup
