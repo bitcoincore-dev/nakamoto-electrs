@@ -1,6 +1,6 @@
 [package]
 name = "nakamoto-electrs"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 default-run = "nakamoto-electrs"
 
@@ -8,7 +8,7 @@ default-run = "nakamoto-electrs"
 anyhow = "1.0"
 bitcoin = "0.30"
 crossbeam-channel = "0.5"
-electrs = "0.10.10"
+electrs = { version = "0.10.10", default-features = false }
 nakamoto-chain = "0.4"
 nakamoto-client = "0.4"
 nakamoto-net-poll = "0.4"
