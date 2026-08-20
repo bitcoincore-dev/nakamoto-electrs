@@ -1160,6 +1160,35 @@ mod tests {
     }
 
     #[test]
+    fn scripthash_get_mempool_reports_pending_fee() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: script.clone(),
+            }],
+        };
+        indexer.track_pending_transaction(&tx).expect("track pending");
+        let sh = ScriptHash::from_script(&script);
+        let resp = handle_scripthash_get_mempool(&json!([sh.to_hex()]), &indexer).expect("mempool");
+        let arr = resp.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["height"], json!(0));
+        assert_eq!(arr[0]["fee"], json!(0));
+        assert_eq!(arr[0]["tx_hash"], json!(tx.compute_txid().to_string()));
+    }
+
+    #[test]
     fn scripthash_listunspent_includes_pending_outputs() {
         let dir = tempfile::tempdir().expect("temp").keep();
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
