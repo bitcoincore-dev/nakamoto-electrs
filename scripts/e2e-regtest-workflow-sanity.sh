@@ -16,6 +16,9 @@ for needle in [
     'detect-bitcoin-core-versions.sh',
     'stable_base_url',
     'rc_base_url',
+    'matrix.os',
+    'macos-latest',
+    'Determine Bitcoin Core archive suffix',
 ]:
     assert needle in text, needle
 print('Content checks OK')
