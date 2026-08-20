@@ -144,6 +144,8 @@ cargo test --test e2e_regtest -- --ignored
 * **Mempool view** — `blockchain.scripthash.get_mempool` exposes the pending
   transactions currently known to the bridge, including an estimated fee and
   whether the transaction spends any unconfirmed inputs.
+* **Mempool-aware subscriptions** — `scripthash.subscribe` status hashes now
+  include both confirmed history and known pending transactions.
 * **Electrum live updates** — `headers.subscribe`, `scripthash.subscribe`,
   `transaction.broadcast`, and `transaction.get` are wired to the nakamoto-
   backed indexer and block source, including rollback/reorg notifications.
