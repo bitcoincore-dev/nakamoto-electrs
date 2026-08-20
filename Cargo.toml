@@ -1,8 +1,32 @@
 [package]
 name = "nakamoto-electrs"
-version = "0.0.3"
+version = "0.0.5"
 edition = "2024"
 default-run = "nakamoto-electrs"
+
+[features]
+# Enable the standalone `electrs` binary (requires librocksdb at link time).
+electrs-bin = ["dep:electrs"]
+
+[dependencies]
+anyhow = "1.0"
+bitcoin = "0.32.102"
+clap = { version = "4.5", features = ["derive"] }
+crossbeam-channel = "0.5"
+ctrlc = "3.4"
+electrs = { version = "0.10.10", default-features = false, optional = true }
+hex = "0.4"
+nakamoto-chain = "0.4"
+nakamoto-client = "0.4"
+nakamoto-common = "0.4"
+nakamoto-net-poll = "0.4"
+nakamoto-node = "0.4"
+serde_json = "1.0"
+sled = "0.34"
+tempfile = "3.23"
+tokio = { version = "1.38", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 [[example]]
 name = "electrs"
@@ -13,23 +37,17 @@ required-features = ["electrs-bin"]
 name = "nakamoto"
 path = "examples/nakamoto.rs"
 
-[features]
-# Enable the standalone `electrs` binary (requires librocksdb at link time).
-electrs-bin = []
+[profile.dev]
+debug = 0
+debug-assertions = false
+strip = "debuginfo"
 
-[dependencies]
-anyhow = "1.0"
-bitcoin = "0.32.102"
-clap = { version = "4.5", features = ["derive"] }
-crossbeam-channel = "0.5"
-electrs = { version = "0.10.10", default-features = false }
-hex = "0.4"
-nakamoto-chain = "0.4"
-nakamoto-client = "0.4"
-nakamoto-common = "0.4"
-nakamoto-net-poll = "0.4"
-nakamoto-node = "0.4"
-serde_json = "1.0"
-tokio = { version = "1.38", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
+[profile.test]
+overflow-checks = false
+
+[profile.release]
+debug = 0
+debug-assertions = false
+strip = "debuginfo"
+lto = "thin"
+codegen-units = 1

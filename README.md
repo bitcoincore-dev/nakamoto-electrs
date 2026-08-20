@@ -24,7 +24,8 @@ Bitcoin P2P Network
          ▼
 ┌───────────────────┐
 │  ElectrumServer   │  TCP JSON-RPC (Electrum protocol v1.4)
-│                   │  Answers: get_history, subscribe, broadcast, …
+│                   │  Answers: get_history, get_balance, listunspent, subscribe, broadcast, …
+│                   │  Locally broadcast txs also update pending balance/history/subscribe state
 └───────────────────┘
          │
          ▼
@@ -69,7 +70,7 @@ Options:
 |---|---|---|
 | `--network <net>` | `testnet` | Bitcoin network (`mainnet`, `testnet`, `signet`, `regtest`) |
 | `--listen <addr>` | `127.0.0.1:<port>` | Electrum listener address |
-| `--data-dir <path>` | `~/.nakamoto-electrs/<network>` | Index and headers directory |
+| `--data-dir <path>` | `~/.nakamoto-electrs/<network>` | Base runtime data directory (`nakamoto/` + `index/`) |
 | `--peer <addr>` | *(DNS seeds)* | Explicit nakamoto peer (repeatable) |
 | `--log <level>` | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
 
@@ -134,12 +135,11 @@ cargo test --test e2e_regtest -- --ignored
 
 ## Known limitations
 
-* **No UTXO set** — `blockchain.transaction.get` and spending-input indexing
-  require a UTXO database that is not yet implemented.
-* **In-memory index** — the index is not persisted across restarts.  A future
-  version will use RocksDB.
-* **No transaction broadcast** — `blockchain.transaction.broadcast` parses and
-  validates the transaction but does not yet forward it to the nakamoto handle.
+* **Partial mempool balance** — locally broadcast transactions are tracked as
+  pending and notify subscribed clients, but full peer-observed mempool
+  modeling is still incomplete.
+* **Persistent index** — history, raw transaction lookups, and confirmed UTXOs
+  survive restarts via the embedded store.
 * **nakamoto is SPV** — nakamoto downloads compact block filters (BIP 157/158)
   and fetches full blocks only for matching filters.  This means the indexer
   only sees blocks that match watched scripts.  Watching all scripts requires

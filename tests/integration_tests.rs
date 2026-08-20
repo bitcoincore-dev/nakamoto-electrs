@@ -4,10 +4,13 @@
 //! covering interactions between multiple modules rather than individual
 //! functions in isolation.
 
+use nakamoto_electrs::indexer::Indexer;
+use nakamoto_electrs::metrics::Metrics;
 use nakamoto_electrs::{
     Network, block_reward_sats, format_fee_rate, is_halving_height, is_valid_script_hex,
     saturating_sub, txid_to_electrum_bytes,
 };
+use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Network round-trip
@@ -187,7 +190,7 @@ mod mock {
 
     use anyhow::Result;
     use bitcoin::{
-        Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Witness,
+        Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Witness,
         absolute::LockTime,
         blockdata::block::Header as BlockHeader,
         blockdata::{
@@ -215,7 +218,7 @@ mod mock {
         let outputs = scripts
             .into_iter()
             .map(|s| TxOut {
-                value: bitcoin::Amount::from_sat(1000),
+                value: Amount::from_sat(1000),
                 script_pubkey: s,
             })
             .collect();
@@ -232,8 +235,33 @@ mod mock {
         }
     }
 
+    pub fn make_spend_tx(prevout: OutPoint, scripts: Vec<(u64, ScriptBuf)>) -> Transaction {
+        let outputs = scripts
+            .into_iter()
+            .map(|(value, script)| TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey: script,
+            })
+            .collect();
+        Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: prevout,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: outputs,
+        }
+    }
+
     pub fn make_block(prev: BlockHash, height: u32, scripts: Vec<ScriptBuf>) -> Block {
         let tx = make_tx(scripts);
+        make_block_with_txs(prev, height, vec![tx])
+    }
+
+    pub fn make_block_with_txs(prev: BlockHash, height: u32, txdata: Vec<Transaction>) -> Block {
         let header = BlockHeader {
             version: Version::ONE,
             prev_blockhash: prev,
@@ -242,10 +270,7 @@ mod mock {
             bits: CompactTarget::from_consensus(0x1d00ffff),
             nonce: height, // differentiate blocks by nonce
         };
-        Block {
-            header,
-            txdata: vec![tx],
-        }
+        Block { header, txdata }
     }
 
     /// A [`BlockSource`] that replays pre-built events from a channel.
@@ -289,11 +314,7 @@ mod mock {
 }
 
 use bitcoin::{blockdata::script::Builder, hashes::Hash};
-use nakamoto_electrs::{
-    block_source::BlockEvent,
-    indexer::{Indexer, ScriptHash},
-    metrics::Metrics,
-};
+use nakamoto_electrs::{block_source::BlockEvent, indexer::ScriptHash};
 
 fn p2pkh_script() -> bitcoin::ScriptBuf {
     let mut s = vec![0x76u8, 0xa9, 0x14];
@@ -306,10 +327,15 @@ fn sh_of(script: &bitcoin::ScriptBuf) -> ScriptHash {
     ScriptHash::from_script(script)
 }
 
+fn make_indexer(metrics: Metrics) -> Indexer {
+    let dir = tempdir().expect("temp index dir").keep();
+    Indexer::new(dir, metrics).expect("indexer")
+}
+
 #[test]
 fn indexer_processes_block_from_mock_source() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     let script = p2pkh_script();
@@ -332,7 +358,7 @@ fn indexer_processes_block_from_mock_source() {
 #[test]
 fn indexer_rollback_on_disconnected_event() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     let script = p2pkh_script();
@@ -365,7 +391,7 @@ fn indexer_rollback_on_disconnected_event() {
 #[test]
 fn indexer_reorg_replaces_history() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     let script_a = mock::op_return_script(0xAA);
@@ -409,7 +435,7 @@ fn indexer_reorg_replaces_history() {
 #[test]
 fn indexer_tip_height_advances() {
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(Metrics::new());
+    let indexer = make_indexer(Metrics::new());
     let _handle = indexer.clone().start(&source);
 
     for h in 1u32..=5 {
@@ -429,7 +455,7 @@ fn indexer_tip_height_advances() {
 fn metrics_track_indexed_blocks() {
     let metrics = Metrics::new();
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(metrics.clone());
+    let indexer = make_indexer(metrics.clone());
     let _handle = indexer.clone().start(&source);
 
     for i in 0u8..3 {
@@ -453,7 +479,7 @@ fn metrics_track_indexed_blocks() {
 fn metrics_track_rolled_back_blocks() {
     let metrics = Metrics::new();
     let source = mock::MockBlockSource::new();
-    let indexer = Indexer::new(metrics.clone());
+    let indexer = make_indexer(metrics.clone());
     let _handle = indexer.clone().start(&source);
 
     let block = mock::make_block(
@@ -467,4 +493,159 @@ fn metrics_track_rolled_back_blocks() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     assert_eq!(metrics.blocks_rolled_back(), 1);
+}
+
+#[test]
+fn indexer_tracks_balance_and_spend_history() {
+    let source = mock::MockBlockSource::new();
+    let indexer = make_indexer(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script_a = p2pkh_script();
+    let script_b = mock::op_return_script(0x22);
+    let block1 = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script_a.clone()]);
+    let fund_txid = block1.txdata[0].compute_txid();
+    let fund_outpoint = bitcoin::OutPoint::new(fund_txid, 0);
+
+    source.push(BlockEvent::Connected {
+        block: block1,
+        height: 1,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert_eq!(indexer.get_balance(&sh_of(&script_a)).unwrap(), 1000);
+
+    let spend_tx = mock::make_spend_tx(fund_outpoint, vec![(900, script_b)]);
+    let block2 = mock::make_block_with_txs(bitcoin::BlockHash::all_zeros(), 2, vec![spend_tx]);
+    source.push(BlockEvent::Connected {
+        block: block2,
+        height: 2,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert_eq!(indexer.get_balance(&sh_of(&script_a)).unwrap(), 0);
+    assert_eq!(indexer.get_history(&sh_of(&script_a)).len(), 2);
+}
+
+#[test]
+fn indexer_tracks_unconfirmed_pending_balance_and_history() {
+    let source = mock::MockBlockSource::new();
+    let indexer = make_indexer(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script_a = p2pkh_script();
+    let script_b = mock::op_return_script(0x44);
+    let block1 = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script_a.clone()]);
+    let fund_txid = block1.txdata[0].compute_txid();
+    let fund_outpoint = bitcoin::OutPoint::new(fund_txid, 0);
+
+    source.push(BlockEvent::Connected {
+        block: block1,
+        height: 1,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let pending = mock::make_spend_tx(fund_outpoint, vec![(900, script_b.clone())]);
+    indexer
+        .track_pending_transaction(&pending)
+        .expect("track pending tx");
+
+    let sh_a = sh_of(&script_a);
+    let sh_b = sh_of(&script_b);
+    assert_eq!(indexer.get_balance(&sh_a).unwrap(), 1000);
+    assert_eq!(indexer.get_unconfirmed_balance_delta(&sh_a).unwrap(), -1000);
+    assert_eq!(indexer.get_unconfirmed_balance_delta(&sh_b).unwrap(), 900);
+    assert!(
+        indexer
+            .get_history(&sh_a)
+            .iter()
+            .any(|e| e.height == 0 && e.txid == pending.compute_txid())
+    );
+    assert!(
+        indexer
+            .get_history(&sh_b)
+            .iter()
+            .any(|e| e.height == 0 && e.txid == pending.compute_txid())
+    );
+}
+
+#[test]
+fn indexer_listunspent_is_stable_and_deduped() {
+    let source = mock::MockBlockSource::new();
+    let indexer = make_indexer(Metrics::new());
+    let _handle = indexer.clone().start(&source);
+
+    let script = p2pkh_script();
+    let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
+    let txid = block.txdata[0].compute_txid();
+    let outpoint = bitcoin::OutPoint::new(txid, 0);
+    source.push(BlockEvent::Connected {
+        block: block.clone(),
+        height: 1,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let pending = mock::make_spend_tx(outpoint, vec![(900, mock::op_return_script(0x55))]);
+    indexer
+        .track_pending_transaction(&pending)
+        .expect("track pending");
+
+    let sh = sh_of(&script);
+    let unspent = indexer.list_unspent(&sh).unwrap();
+    assert_eq!(unspent.len(), 1);
+    assert_eq!(unspent[0].height, 1);
+    assert_eq!(unspent[0].txid, txid);
+}
+
+#[test]
+fn indexer_persists_history_balance_and_utxos_across_restart() {
+    let dir = tempdir().expect("temp index dir").keep();
+    let script_a = p2pkh_script();
+    let script_b = mock::op_return_script(0x33);
+
+    let indexer_thread = {
+        let source = mock::MockBlockSource::new();
+        let indexer = Indexer::new(dir.clone(), Metrics::new()).expect("indexer");
+        let handle = indexer.clone().start(&source);
+
+        let block1 = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script_a.clone()]);
+        let fund_txid = block1.txdata[0].compute_txid();
+        let fund_outpoint = bitcoin::OutPoint::new(fund_txid, 0);
+        source.push(BlockEvent::Connected {
+            block: block1,
+            height: 1,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let spend_tx = mock::make_spend_tx(fund_outpoint, vec![(900, script_b.clone())]);
+        let block2 = mock::make_block_with_txs(bitcoin::BlockHash::all_zeros(), 2, vec![spend_tx]);
+        source.push(BlockEvent::Connected {
+            block: block2,
+            height: 2,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let sh_a = sh_of(&script_a);
+        let sh_b = sh_of(&script_b);
+        assert_eq!(indexer.get_balance(&sh_a).unwrap(), 0);
+        assert!(indexer.list_unspent(&sh_a).unwrap().is_empty());
+        assert_eq!(indexer.get_balance(&sh_b).unwrap(), 900);
+        assert_eq!(indexer.list_unspent(&sh_b).unwrap().len(), 1);
+        assert_eq!(indexer.get_history(&sh_a).len(), 2);
+        assert_eq!(indexer.get_history(&sh_b).len(), 1);
+        handle
+    };
+
+    indexer_thread.join().expect("indexer thread");
+
+    let reopened = Indexer::new(dir, Metrics::new()).expect("reopened indexer");
+
+    let sh_a = sh_of(&script_a);
+    let sh_b = sh_of(&script_b);
+    assert_eq!(reopened.get_balance(&sh_a).unwrap(), 0);
+    assert!(reopened.list_unspent(&sh_a).unwrap().is_empty());
+    assert_eq!(reopened.get_balance(&sh_b).unwrap(), 900);
+    assert_eq!(reopened.list_unspent(&sh_b).unwrap().len(), 1);
+    assert_eq!(reopened.get_history(&sh_a).len(), 2);
+    assert_eq!(reopened.get_history(&sh_b).len(), 1);
 }

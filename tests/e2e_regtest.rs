@@ -28,14 +28,16 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 use nakamoto_electrs::block_source::{BlockEvent, BlockSource};
-use nakamoto_electrs::electrum_server::ElectrumServer;
+use nakamoto_electrs::electrum_server::{ElectrumServer, FeeRateState};
 use nakamoto_electrs::indexer::Indexer;
 use nakamoto_electrs::metrics::Metrics;
+use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Helpers shared by all tests in this file
@@ -75,20 +77,23 @@ impl BlockSource for StubSource {
 /// background thread.  Returns the bound `SocketAddr`.
 fn start_electrum_server() -> SocketAddr {
     let metrics = Metrics::new();
-    let indexer = Indexer::new(metrics.clone());
+    let dir = tempdir().expect("temp index dir").keep();
+    let indexer = Indexer::new(dir, metrics.clone()).expect("indexer");
+    let fee_rate = std::sync::Arc::new(FeeRateState::new());
 
     // Port 0 lets the OS pick a free port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let server =
-        ElectrumServer::bind(addr, indexer, metrics).expect("failed to bind ElectrumServer");
+    let server = ElectrumServer::bind(addr, indexer, metrics, None, fee_rate)
+        .expect("failed to bind ElectrumServer");
     let local_addr = server.local_addr();
 
     let source = Arc::new(StubSource);
+    let shutdown = Arc::new(AtomicBool::new(false));
     thread::Builder::new()
         .name("electrum-server-test".into())
         .spawn(move || {
             // Errors here are expected when the test drops the connection.
-            let _ = server.run(source);
+            let _ = server.run(source, shutdown);
         })
         .expect("failed to spawn server thread");
 
@@ -115,6 +120,23 @@ fn electrum_call(addr: SocketAddr, request: &str) -> serde_json::Value {
     reader.read_line(&mut line).expect("read failed");
 
     serde_json::from_str(line.trim()).expect("invalid JSON response")
+}
+
+fn bitcoin_cli_base_args(
+    datadir: Option<&str>,
+    rpc_user: &str,
+    rpc_pass: &str,
+    port: &str,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(datadir) = datadir {
+        args.push(format!("-datadir={datadir}"));
+    }
+    args.push("-regtest".to_string());
+    args.push(format!("-rpcuser={rpc_user}"));
+    args.push(format!("-rpcpassword={rpc_pass}"));
+    args.push(format!("-rpcport={port}"));
+    args
 }
 
 // ---------------------------------------------------------------------------
@@ -166,15 +188,16 @@ fn e2e_scripthash_history_after_payment() {
     // Verify that bitcoind is reachable before proceeding.
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
 
     let status = std::process::Command::new("bitcoin-cli")
-        .args([
-            "-regtest",
-            &format!("-rpcuser={rpc_user}"),
-            &format!("-rpcpassword={rpc_pass}"),
-            "-rpcport=18443",
-            "getblockchaininfo",
-        ])
+        .args(bitcoin_cli_base_args(
+            datadir.as_deref(),
+            &rpc_user,
+            &rpc_pass,
+            "18443",
+        ))
+        .arg("getblockchaininfo")
         .status();
 
     // If bitcoin-cli is not available or bitcoind is not running, skip.
@@ -226,17 +249,27 @@ fn e2e_scripthash_history_after_payment() {
 fn e2e_rc_node_reachable_and_on_same_chain() {
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let stable_datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
+    let rc_datadir = std::env::var("BITCOIND_RC_DATADIR").ok();
+    let Some(rc_datadir) = rc_datadir else {
+        eprintln!("BITCOIND_RC_DATADIR not set — skipping RC test");
+        return;
+    };
 
     // ── helper: call bitcoin-cli and return stdout, or None if unavailable ──
     let rpc_call = |port: &str, method: &str| -> Option<String> {
         let out = std::process::Command::new("bitcoin-cli")
-            .args([
-                "-regtest",
-                &format!("-rpcuser={rpc_user}"),
-                &format!("-rpcpassword={rpc_pass}"),
-                &format!("-rpcport={port}"),
-                method,
-            ])
+            .args(bitcoin_cli_base_args(
+                if port == "18443" {
+                    stable_datadir.as_deref()
+                } else {
+                    Some(rc_datadir.as_str())
+                },
+                &rpc_user,
+                &rpc_pass,
+                port,
+            ))
+            .arg(method)
             .output()
             .ok()?;
         if out.status.success() {
@@ -304,15 +337,25 @@ fn e2e_rc_node_reachable_and_on_same_chain() {
 fn e2e_rc_node_syncs_block_from_stable() {
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let stable_datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
+    let rc_datadir = std::env::var("BITCOIND_RC_DATADIR").ok();
+    let Some(rc_datadir) = rc_datadir else {
+        eprintln!("BITCOIND_RC_DATADIR not set — skipping RC test");
+        return;
+    };
 
     let rpc_call = |port: &str, args: &[&str]| -> Option<String> {
         let mut cmd = std::process::Command::new("bitcoin-cli");
-        cmd.args([
-            "-regtest",
-            &format!("-rpcuser={rpc_user}"),
-            &format!("-rpcpassword={rpc_pass}"),
-            &format!("-rpcport={port}"),
-        ]);
+        cmd.args(bitcoin_cli_base_args(
+            if port == "18443" {
+                stable_datadir.as_deref()
+            } else {
+                Some(rc_datadir.as_str())
+            },
+            &rpc_user,
+            &rpc_pass,
+            port,
+        ));
         cmd.args(args);
         let out = cmd.output().ok()?;
         if out.status.success() {

@@ -3,6 +3,7 @@ name: E2E Regtest
 on:
   push:
     branches: ["**"]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -212,6 +213,9 @@ jobs:
 
           bitcoind-rc -regtest -datadir="$HOME/.bitcoin-rc"
           echo "RC bitcoind started."
+
+          echo "BITCOIND_STABLE_DATADIR=$HOME/.bitcoin-stable" >> "$GITHUB_ENV"
+          echo "BITCOIND_RC_DATADIR=$HOME/.bitcoin-rc" >> "$GITHUB_ENV"
 
           # ── Wait for both RPC endpoints ───────────────────────────────────────
           for PORT in 18443 18445; do

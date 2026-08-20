@@ -25,8 +25,8 @@ pub struct Config {
     /// its built-in DNS seeds.
     pub nakamoto_peers: Vec<SocketAddr>,
 
-    /// Directory where nakamoto stores its block-header and filter caches, and
-    /// where the Electrum index is persisted.
+    /// Base directory for runtime data. nakamoto caches live in `nakamoto/`
+    /// and the Electrum index persists in `index/`.
     pub index_dir: PathBuf,
 
     /// Maximum log verbosity level.
@@ -126,6 +126,7 @@ pub struct Cli {
 pub enum Command {
     /// Run the standalone nakamoto SPV node.
     Nakamoto,
+    #[cfg(feature = "electrs-bin")]
     /// Run the standalone electrs binary backed by Bitcoin Core.
     Electrs,
 }
@@ -173,6 +174,7 @@ impl From<LevelArg> for Level {
 pub enum Mode {
     Bridge(Config),
     Nakamoto(NakamotoConfig),
+    #[cfg(feature = "electrs-bin")]
     Electrs,
 }
 
@@ -203,6 +205,7 @@ impl Cli {
 
         match self.command {
             Some(Command::Nakamoto) => Mode::Nakamoto(nakamoto),
+            #[cfg(feature = "electrs-bin")]
             Some(Command::Electrs) => Mode::Electrs,
             None => Mode::Bridge(bridge),
         }
@@ -274,6 +277,16 @@ mod tests {
 
         let cfg = Config::new(Network::Mainnet);
         assert!(cfg.index_dir.to_string_lossy().contains("mainnet"));
+    }
+
+    #[test]
+    fn signet_and_testnet_use_distinct_data_dirs() {
+        let signet = Config::new(Network::Signet);
+        let testnet = Config::new(Network::Testnet);
+
+        assert!(signet.index_dir.to_string_lossy().contains("signet"));
+        assert!(testnet.index_dir.to_string_lossy().contains("testnet"));
+        assert_ne!(signet.index_dir, testnet.index_dir);
     }
 
     #[test]
