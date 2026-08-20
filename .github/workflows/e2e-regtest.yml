@@ -50,17 +50,43 @@ jobs:
 
       # ---------------------------------------------------------------------------
       # Detect and install the latest Bitcoin Core prebuilt binaries
+      # Prefers the most-recently published release, including release candidates
+      # (tagged as vX.Y.ZrcN and marked prerelease on GitHub).
       # ---------------------------------------------------------------------------
-      - name: Detect latest Bitcoin Core release
+      - name: Detect latest Bitcoin Core release (including RCs)
         id: btc_version
         run: |
-          # Fetch the latest release tag from the Bitcoin Core GitHub API
-          VERSION=$(curl -fsSL \
-            "https://api.github.com/repos/bitcoin/bitcoin/releases/latest" \
-            | grep '"tag_name"' \
-            | sed -E 's/.*"v([^"]+)".*/\1/')
+          # Fetch the 10 most recent releases (includes prereleases / RCs).
+          RELEASES=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/bitcoin/bitcoin/releases?per_page=10")
+
+          # Extract the tag_name from the most-recently *published* entry.
+          # jq sorts by published_at descending and takes the first non-draft entry.
+          VERSION=$(echo "$RELEASES" \
+            | python3 -c "
+import json, sys
+releases = json.load(sys.stdin)
+# Filter out drafts; include both stable and RC (prerelease) entries
+candidates = [r for r in releases if not r.get('draft', False)]
+# Sort by published_at descending
+candidates.sort(key=lambda r: r.get('published_at', ''), reverse=True)
+if not candidates:
+    sys.exit('No Bitcoin Core releases found')
+tag = candidates[0]['tag_name']          # e.g. 'v29.0rc2' or 'v28.1'
+version = tag.lstrip('v')               # strip leading 'v'
+print(version)
+")
+
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected Bitcoin Core version: ${VERSION}"
+
+          # Emit a human-readable label so CI logs are easy to read.
+          if echo "${VERSION}" | grep -qiE 'rc[0-9]+$'; then
+            echo "This is a RELEASE CANDIDATE: ${VERSION}"
+          else
+            echo "This is a STABLE release: ${VERSION}"
+          fi
 
       - name: Download and install Bitcoin Core binaries
         run: |
