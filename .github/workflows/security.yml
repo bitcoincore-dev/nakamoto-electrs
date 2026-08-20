@@ -4,9 +4,14 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
   schedule:
     # Run every Monday at 08:00 UTC so new advisories are caught promptly.
     - cron: "0 8 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
