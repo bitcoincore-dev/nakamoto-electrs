@@ -88,7 +88,8 @@ impl PersistentIndex {
     }
 
     pub fn set_tip_height(&self, height: u32) -> Result<()> {
-        self.meta.insert(b"tip_height", height.to_be_bytes().to_vec())?;
+        self.meta
+            .insert(b"tip_height", height.to_be_bytes().to_vec())?;
         Ok(())
     }
 
@@ -135,7 +136,8 @@ impl PersistentIndex {
             value,
             height,
         };
-        self.outputs.insert(outpoint_key(&outpoint), encode_output(&output))?;
+        self.outputs
+            .insert(outpoint_key(&outpoint), encode_output(&output))?;
         self.utxos.insert(
             utxo_key(script_hash, outpoint.txid, outpoint.vout),
             &value.to_be_bytes(),
@@ -257,9 +259,15 @@ impl PersistentIndex {
             out.push(TxEntry {
                 txid: entry.txid,
                 height: entry.height,
+                sequence: entry.sequence,
             });
         }
-        out.sort_by_key(|e| if e.height == 0 { u32::MAX } else { e.height });
+        out.sort_by_key(|e| {
+            (
+                if e.height == 0 { u32::MAX } else { e.height },
+                e.sequence,
+            )
+        });
         Ok(out)
     }
 

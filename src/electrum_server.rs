@@ -24,11 +24,14 @@
 //!
 //! [spec]: https://electrumx.readthedocs.io/en/latest/protocol-methods.html
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::thread;
-use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use bitcoin::consensus::encode::{serialize, serialize_hex};
@@ -131,7 +134,11 @@ impl ElectrumServer {
 
     /// Run the accept loop.  Blocks until the listener is closed or an
     /// unrecoverable error occurs.
-    pub fn run<S: BlockSource + Sync>(self, source: Arc<S>, shutdown: Arc<AtomicBool>) -> Result<()> {
+    pub fn run<S: BlockSource + Sync>(
+        self,
+        source: Arc<S>,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<()> {
         let indexer = Arc::new(self.indexer);
         let metrics = Arc::new(self.metrics);
         let broadcaster = self.broadcaster.clone();
@@ -157,9 +164,14 @@ impl ElectrumServer {
                     thread::Builder::new()
                         .name(format!("electrum-{peer}"))
                         .spawn(move || {
-                            if let Err(e) =
-                                handle_client(stream, &indexer, Arc::clone(&source), &metrics, broadcaster, &fee_rate)
-                            {
+                            if let Err(e) = handle_client(
+                                stream,
+                                &indexer,
+                                Arc::clone(&source),
+                                &metrics,
+                                broadcaster,
+                                &fee_rate,
+                            ) {
                                 debug!("client {peer} disconnected: {e:#}");
                             }
                             metrics.dec_electrum_connections();
@@ -212,7 +224,9 @@ fn handle_client<S: BlockSource + Sync + 'static>(
     fee_rate: &Arc<FeeRateState>,
 ) -> Result<()> {
     let peer = stream.peer_addr()?.to_string();
-    let writer = Arc::new(Mutex::new(stream.try_clone().context("clone stream for write")?));
+    let writer = Arc::new(Mutex::new(
+        stream.try_clone().context("clone stream for write")?,
+    ));
     let reader = BufReader::new(stream);
     let state = Arc::new(Mutex::new(ClientState::new()));
     let events = source.subscribe();
@@ -243,7 +257,9 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                                 }
                             }
                         }
-                        let current_headers = current_header_status(&indexer, source.as_ref()).ok().flatten();
+                        let current_headers = current_header_status(&indexer, source.as_ref())
+                            .ok()
+                            .flatten();
                         let mut send_header = false;
                         {
                             let mut state = state.lock().expect("electrum state poisoned");
@@ -501,14 +517,19 @@ fn handle_transaction_broadcast(
     metrics.inc_transactions_broadcast();
     match broadcaster {
         Some(broadcaster) => {
-            broadcaster.broadcast_transaction(tx).map_err(|e| format!("broadcast failed: {e}"))?;
+            broadcaster
+                .broadcast_transaction(tx)
+                .map_err(|e| format!("broadcast failed: {e}"))?;
             Ok(Value::String(txid.to_string()))
         }
         None => Err("transaction broadcast is only available in bridge mode".into()),
     }
 }
 
-fn handle_estimatefee(params: &Value, fee_rate: &Arc<FeeRateState>) -> std::result::Result<Value, String> {
+fn handle_estimatefee(
+    params: &Value,
+    fee_rate: &Arc<FeeRateState>,
+) -> std::result::Result<Value, String> {
     let _blocks = params.get(0).and_then(Value::as_u64).unwrap_or(6);
     // Return -1 until we have seen at least one fee estimate from nakamoto.
     match fee_rate.current_sat_per_vb() {
@@ -707,7 +728,11 @@ mod tests {
     #[test]
     fn compute_status_hash_uses_electrum_format() {
         let txid = "0".repeat(64).parse().unwrap();
-        let history = vec![crate::indexer::TxEntry { txid, height: 1 }];
+        let history = vec![crate::indexer::TxEntry {
+            txid,
+            height: 1,
+            sequence: 0,
+        }];
         assert_eq!(
             compute_status_hash(&history).as_deref(),
             Some("12b132b4f9cac2ddb0a05030bf14ab07a46352fe787aa4f0e245fac197dd5b48")
@@ -757,10 +782,14 @@ mod tests {
     #[test]
     fn listunspent_uses_expected_fields() {
         let params = json!(["0".repeat(64)]);
-        assert!(handle_scripthash_listunspent(&params, &Indexer::new(
-            tempfile::tempdir().expect("temp").keep(),
-            Metrics::new()
-        ).expect("indexer")).is_ok());
+        assert!(
+            handle_scripthash_listunspent(
+                &params,
+                &Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+                    .expect("indexer")
+            )
+            .is_ok()
+        );
     }
 
     #[test]

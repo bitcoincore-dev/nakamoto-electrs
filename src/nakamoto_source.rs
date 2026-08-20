@@ -31,7 +31,10 @@
 //! corresponding receiver.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -189,22 +192,22 @@ impl NakamotoBlockSource {
                     while !shutdown.load(Ordering::Relaxed) {
                         match blocks_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                             Ok((nk_block, height)) => match conv_block(&nk_block) {
-                            Ok(block) => {
-                                let hash = block.block_hash();
-                                debug!("nakamoto delivered full block {} h={}", hash, height);
-                                cache
-                                    .lock()
-                                    .expect("block_cache lock poisoned")
-                                    .insert(hash, block.clone());
-                                broadcast(
-                                    &subs,
-                                    &BlockEvent::Connected {
-                                        block,
-                                        height: height as u32,
-                                    },
-                                );
-                            }
-                            Err(e) => error!("block conversion failed: {e:#}"),
+                                Ok(block) => {
+                                    let hash = block.block_hash();
+                                    debug!("nakamoto delivered full block {} h={}", hash, height);
+                                    cache
+                                        .lock()
+                                        .expect("block_cache lock poisoned")
+                                        .insert(hash, block.clone());
+                                    broadcast(
+                                        &subs,
+                                        &BlockEvent::Connected {
+                                            block,
+                                            height: height as u32,
+                                        },
+                                    );
+                                }
+                                Err(e) => error!("block conversion failed: {e:#}"),
                             },
                             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
@@ -227,52 +230,52 @@ impl NakamotoBlockSource {
                         match events_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                             Ok(event) => match event {
                                 NkEvent::BlockConnected { hash, height, .. } => {
-                                debug!("BlockConnected h={height} {hash}");
-                                // Ask nakamoto to download the full block.  It
-                                // will be delivered to `blocks_rx` handled above.
-                                if let Err(e) = handle_ref.get_block_erased(&hash) {
-                                    warn!("get_block({hash}) failed: {e}");
-                                }
+                                    debug!("BlockConnected h={height} {hash}");
+                                    // Ask nakamoto to download the full block.  It
+                                    // will be delivered to `blocks_rx` handled above.
+                                    if let Err(e) = handle_ref.get_block_erased(&hash) {
+                                        warn!("get_block({hash}) failed: {e}");
+                                    }
                                 }
                                 NkEvent::BlockDisconnected { hash, height, .. } => {
-                                debug!("BlockDisconnected h={height} {hash}");
-                                match conv_hash(&hash) {
-                                    Ok(bh) => broadcast(
-                                        &subs,
-                                        &BlockEvent::Disconnected {
-                                            hash: bh,
-                                            height: height as u32,
-                                        },
-                                    ),
-                                    Err(e) => error!("hash conversion failed: {e:#}"),
-                                }
-                                }
-                                NkEvent::Synced { height, tip } => {
-                                // nakamoto's Synced reports filter-sync progress; use
-                                // `tip` as the best-chain height.
-                                debug!("Synced h={height} tip={tip}");
-                                // We need the hash of the tip; query the tree.
-                                let (result_tx, result_rx) = unbounded();
-                                if let Err(e) = handle_ref.query_tree_erased(tip, result_tx) {
-                                    warn!("query_tree for Synced failed: {e}");
-                                    continue;
-                                }
-                                match result_rx.recv() {
-                                    Ok(Some(nk_hdr)) => match conv_header(&nk_hdr) {
-                                        Ok(hdr) => broadcast(
+                                    debug!("BlockDisconnected h={height} {hash}");
+                                    match conv_hash(&hash) {
+                                        Ok(bh) => broadcast(
                                             &subs,
-                                            &BlockEvent::Synced {
-                                                height: tip as u32,
-                                                tip: hdr.block_hash(),
+                                            &BlockEvent::Disconnected {
+                                                hash: bh,
+                                                height: height as u32,
                                             },
                                         ),
-                                        Err(e) => error!("header conversion: {e:#}"),
-                                    },
-                                    Ok(None) => {
-                                        warn!("tip header not found at height {tip}")
+                                        Err(e) => error!("hash conversion failed: {e:#}"),
                                     }
-                                    Err(_) => warn!("query_tree result channel closed"),
                                 }
+                                NkEvent::Synced { height, tip } => {
+                                    // nakamoto's Synced reports filter-sync progress; use
+                                    // `tip` as the best-chain height.
+                                    debug!("Synced h={height} tip={tip}");
+                                    // We need the hash of the tip; query the tree.
+                                    let (result_tx, result_rx) = unbounded();
+                                    if let Err(e) = handle_ref.query_tree_erased(tip, result_tx) {
+                                        warn!("query_tree for Synced failed: {e}");
+                                        continue;
+                                    }
+                                    match result_rx.recv() {
+                                        Ok(Some(nk_hdr)) => match conv_header(&nk_hdr) {
+                                            Ok(hdr) => broadcast(
+                                                &subs,
+                                                &BlockEvent::Synced {
+                                                    height: tip as u32,
+                                                    tip: hdr.block_hash(),
+                                                },
+                                            ),
+                                            Err(e) => error!("header conversion: {e:#}"),
+                                        },
+                                        Ok(None) => {
+                                            warn!("tip header not found at height {tip}")
+                                        }
+                                        Err(_) => warn!("query_tree result channel closed"),
+                                    }
                                 }
                                 _ => {}
                             },

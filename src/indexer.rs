@@ -70,6 +70,8 @@ pub struct TxEntry {
     pub txid: Txid,
     /// Block height at which this tx was confirmed, or `0` for unconfirmed.
     pub height: u32,
+    /// Stable ordering within a block for deterministic history/status hashes.
+    pub sequence: u32,
 }
 
 struct IndexState {
@@ -81,10 +83,22 @@ struct IndexState {
 
 #[derive(Debug, Clone)]
 enum BlockAction {
-    Tx { txid: Txid, journal_key: Vec<u8> },
-    History { history_key: Vec<u8>, journal_key: Vec<u8> },
-    Output { outpoint: OutPoint, journal_key: Vec<u8> },
-    Spend { outpoint: OutPoint, journal_key: Vec<u8> },
+    Tx {
+        txid: Txid,
+        journal_key: Vec<u8>,
+    },
+    History {
+        history_key: Vec<u8>,
+        journal_key: Vec<u8>,
+    },
+    Output {
+        outpoint: OutPoint,
+        journal_key: Vec<u8>,
+    },
+    Spend {
+        outpoint: OutPoint,
+        journal_key: Vec<u8>,
+    },
 }
 
 impl IndexState {
@@ -110,6 +124,7 @@ impl IndexState {
                 .push(TxEntry {
                     txid: entry.txid,
                     height: entry.height,
+                    sequence: entry.sequence,
                 });
         }
         Ok(())
@@ -169,7 +184,11 @@ impl IndexState {
                 }
                 if let Some(stored_output) = self.store.load_output(&prevout)? {
                     let sh = stored_output.script_hash;
-                    let entry = TxEntry { txid, height };
+                    let entry = TxEntry {
+                        txid,
+                        height,
+                        sequence: input_index as u32,
+                    };
                     self.history.entry(sh).or_default().push(entry);
                     let history_key = self.store.store_history_entry(
                         sh,
@@ -212,7 +231,11 @@ impl IndexState {
             }
             for (output_index, output) in tx.output.iter().enumerate() {
                 let sh = ScriptHash::from_script(&output.script_pubkey);
-                let entry = TxEntry { txid, height };
+                let entry = TxEntry {
+                    txid,
+                    height,
+                    sequence: output_index as u32,
+                };
                 self.history.entry(sh).or_default().push(entry);
                 let history_key = self.store.store_history_entry(
                     sh,
@@ -229,12 +252,8 @@ impl IndexState {
                 )?;
                 sequence += 1;
                 let outpoint = OutPoint::new(txid, output_index as u32);
-                self.store.store_output(
-                    outpoint,
-                    sh,
-                    output.value.to_sat(),
-                    height,
-                )?;
+                self.store
+                    .store_output(outpoint, sh, output.value.to_sat(), height)?;
                 let output_key = self.store.store_journal_action(
                     height,
                     sequence,
@@ -322,7 +341,12 @@ impl IndexState {
 
     fn get_history(&self, sh: &ScriptHash) -> Vec<TxEntry> {
         let mut entries = self.history.get(sh).cloned().unwrap_or_default();
-        entries.sort_by_key(|e| if e.height == 0 { u32::MAX } else { e.height });
+        entries.sort_by_key(|e| {
+            (
+                if e.height == 0 { u32::MAX } else { e.height },
+                e.sequence,
+            )
+        });
         entries
     }
 
@@ -427,7 +451,9 @@ impl Indexer {
                                     metrics.inc_blocks_indexed();
                                     info!("indexed block h={height} txs={}", block.txdata.len());
                                 }
-                                Err(e) => warn!("failed to persist indexed block h={height}: {e:#}"),
+                                Err(e) => {
+                                    warn!("failed to persist indexed block h={height}: {e:#}")
+                                }
                             }
                         }
                         BlockEvent::Disconnected { hash, height } => {
@@ -453,17 +479,26 @@ impl Indexer {
 
     /// Return the transaction history for a script hash.
     pub fn get_history(&self, sh: &ScriptHash) -> Vec<TxEntry> {
-        self.state.read().expect("index read lock poisoned").get_history(sh)
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .get_history(sh)
     }
 
     /// Return the current best-chain tip height known to the indexer.
     pub fn tip_height(&self) -> u32 {
-        self.state.read().expect("index read lock poisoned").tip_height()
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .tip_height()
     }
 
     /// Returns `true` when the given script hash has any history.
     pub fn has_history(&self, sh: &ScriptHash) -> bool {
-        self.state.read().expect("index read lock poisoned").has_history(sh)
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .has_history(sh)
     }
 
     /// Return a raw transaction by txid, if it has been indexed.
@@ -475,11 +510,17 @@ impl Indexer {
     }
 
     pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
-        self.state.read().expect("index read lock poisoned").get_balance(sh)
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .get_balance(sh)
     }
 
     pub fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
-        self.state.read().expect("index read lock poisoned").list_unspent(sh)
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .list_unspent(sh)
     }
 }
 
@@ -492,11 +533,14 @@ mod tests {
     use super::*;
     use bitcoin::hashes::Hash;
     use bitcoin::{
-        BlockHash, CompactTarget, absolute::LockTime, blockdata::{
+        BlockHash, CompactTarget,
+        absolute::LockTime,
+        blockdata::{
             block::{Header as BlockHeader, Version},
             script::Builder,
             transaction::{Transaction, TxOut},
-        }, hash_types::TxMerkleNode,
+        },
+        hash_types::TxMerkleNode,
     };
 
     fn make_state() -> IndexState {
@@ -531,7 +575,10 @@ mod tests {
             bits: CompactTarget::from_consensus(0x1d00ffff),
             nonce: 0,
         };
-        Block { header, txdata: vec![tx] }
+        Block {
+            header,
+            txdata: vec![tx],
+        }
     }
 
     fn make_spend_block(height: u32, prevout: bitcoin::OutPoint, script: Vec<u8>) -> Block {
@@ -557,7 +604,10 @@ mod tests {
             bits: CompactTarget::from_consensus(0x1d00ffff),
             nonce: 0,
         };
-        Block { header, txdata: vec![tx] }
+        Block {
+            header,
+            txdata: vec![tx],
+        }
     }
 
     fn p2pkh_script() -> Vec<u8> {
@@ -608,7 +658,10 @@ mod tests {
         state.rollback_height(1).expect("rollback");
 
         let sh2 = ScriptHash::from_script(&Builder::from(s2).into_script());
-        assert!(state.history.contains_key(&sh2), "height-2 entry should survive");
+        assert!(
+            state.history.contains_key(&sh2),
+            "height-2 entry should survive"
+        );
     }
 
     #[test]
@@ -626,9 +679,13 @@ mod tests {
     #[test]
     fn indexer_tip_tracks_latest_block() {
         let mut state = make_state();
-        state.apply_block(&make_block(5, vec![p2pkh_script()]), 5).expect("apply 5");
+        state
+            .apply_block(&make_block(5, vec![p2pkh_script()]), 5)
+            .expect("apply 5");
         assert_eq!(state.tip_height, 5);
-        state.apply_block(&make_block(6, vec![p2pkh_script()]), 6).expect("apply 6");
+        state
+            .apply_block(&make_block(6, vec![p2pkh_script()]), 6)
+            .expect("apply 6");
         assert_eq!(state.tip_height, 6);
     }
 
