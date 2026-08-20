@@ -301,9 +301,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
             }
         })?;
 
-    while !shutdown.load(Ordering::Relaxed) {
-        thread::sleep(Duration::from_millis(100));
-    }
+    wait_for_shutdown(Arc::clone(&shutdown));
     Ok(())
 }
 
@@ -383,10 +381,204 @@ fn clear_corrupt_nakamoto_cache(
     true
 }
 
+fn wait_for_shutdown(shutdown: Arc<AtomicBool>) {
+    while !shutdown.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nakamoto_client::{Command, Link, Peer};
+    use std::net::SocketAddr;
+    use std::sync::atomic::AtomicUsize;
     use tempfile::tempdir;
+    use nakamoto_p2p::fsm::Event as FsmEvent;
+
+    #[derive(Clone)]
+    struct MockHandle {
+        shutdown_calls: Arc<AtomicUsize>,
+    }
+
+    impl MockHandle {
+        fn new() -> Self {
+            Self {
+                shutdown_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    impl nakamoto_client::handle::Handle for MockHandle {
+        fn get_tip(
+            &self,
+        ) -> Result<(
+            nakamoto_common::block::Height,
+            nakamoto_common::block::BlockHeader,
+        ), nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn get_block(
+            &self,
+            _hash: &nakamoto_common::block::BlockHash,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn get_filters(
+            &self,
+            _range: std::ops::RangeInclusive<nakamoto_common::block::Height>,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn query_tree(
+            &self,
+            _query: impl Fn(&dyn nakamoto_common::block::tree::BlockReader) + Send + Sync + 'static,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn find_branch(
+            &self,
+            _to: &nakamoto_common::block::BlockHash,
+        ) -> Result<
+            Option<(
+                nakamoto_common::block::Height,
+                nakamoto_common::nonempty::NonEmpty<nakamoto_common::block::BlockHeader>,
+            )>,
+            nakamoto_client::handle::Error,
+        > {
+            unreachable!()
+        }
+        fn blocks(
+            &self,
+        ) -> crossbeam_channel::Receiver<(
+            nakamoto_common::block::Block,
+            nakamoto_common::block::Height,
+        )> {
+            unreachable!()
+        }
+        fn filters(
+            &self,
+        ) -> crossbeam_channel::Receiver<(
+            nakamoto_common::block::filter::BlockFilter,
+            nakamoto_common::block::BlockHash,
+            nakamoto_common::block::Height,
+        )> {
+            unreachable!()
+        }
+        fn events(&self) -> crossbeam_channel::Receiver<nakamoto_client::Event> {
+            unreachable!()
+        }
+        fn command(&self, _cmd: Command) -> Result<(), nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn broadcast(
+            &self,
+            _msg: nakamoto_common::bitcoin::network::message::NetworkMessage,
+            _predicate: fn(Peer) -> bool,
+        ) -> Result<Vec<SocketAddr>, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn query(
+            &self,
+            _msg: nakamoto_common::bitcoin::network::message::NetworkMessage,
+        ) -> Result<Option<SocketAddr>, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn connect(
+            &self,
+            _addr: SocketAddr,
+        ) -> Result<Link, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn disconnect(
+            &self,
+            _addr: SocketAddr,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn submit_transaction(
+            &self,
+            _tx: nakamoto_common::block::Transaction,
+        ) -> Result<
+            nakamoto_common::nonempty::NonEmpty<SocketAddr>,
+            nakamoto_client::handle::Error,
+        > {
+            unreachable!()
+        }
+        fn import_headers(
+            &self,
+            _headers: Vec<nakamoto_common::block::BlockHeader>,
+        ) -> Result<
+            Result<nakamoto_common::block::tree::ImportResult, nakamoto_common::block::tree::Error>,
+            nakamoto_client::handle::Error,
+        > {
+            unreachable!()
+        }
+        fn import_addresses(
+            &self,
+            _addrs: Vec<nakamoto_common::bitcoin::network::Address>,
+        ) -> Result<(), nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn wait<F: FnMut(FsmEvent) -> Option<T>, T>(
+            &self,
+            _f: F,
+        ) -> Result<T, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn wait_for_peers(
+            &self,
+            _count: usize,
+            _required_services: impl Into<nakamoto_common::bitcoin::network::constants::ServiceFlags>,
+        ) -> Result<
+            Vec<(
+                SocketAddr,
+                nakamoto_common::block::Height,
+                nakamoto_common::bitcoin::network::constants::ServiceFlags,
+            )>,
+            nakamoto_client::handle::Error,
+        > {
+            unreachable!()
+        }
+        fn wait_for_height(
+            &self,
+            _h: nakamoto_common::block::Height,
+        ) -> Result<nakamoto_common::block::BlockHash, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn shutdown(self) -> Result<(), nakamoto_client::handle::Error> {
+            self.shutdown_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn shutdown_watcher_only_trips_after_flag_is_set() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let handle = MockHandle::new();
+        let calls = Arc::clone(&handle.shutdown_calls);
+        let watcher = spawn_shutdown_watcher(handle, Arc::clone(&shutdown));
+
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        shutdown.store(true, Ordering::SeqCst);
+        watcher.join().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn wait_for_shutdown_returns_when_flag_flips() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let shutdown = Arc::clone(&shutdown);
+            thread::spawn(move || wait_for_shutdown(shutdown))
+        };
+
+        thread::sleep(Duration::from_millis(100));
+        shutdown.store(true, Ordering::SeqCst);
+        waiter.join().unwrap();
+    }
 
     #[test]
     fn clears_partial_nakamoto_cache() {

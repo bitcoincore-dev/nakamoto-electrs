@@ -28,6 +28,9 @@ tokio = { version = "1.38", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
+[dev-dependencies]
+nakamoto-p2p = "0.4"
+
 [[example]]
 name = "electrs"
 path = "examples/electrs.rs"

@@ -1078,6 +1078,7 @@ dependencies = [
  "nakamoto-common",
  "nakamoto-net-poll",
  "nakamoto-node",
+ "nakamoto-p2p",
  "serde_json",
  "sled",
  "tempfile",
