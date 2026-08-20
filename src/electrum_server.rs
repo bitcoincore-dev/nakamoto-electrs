@@ -1165,6 +1165,44 @@ mod tests {
     }
 
     #[test]
+    fn tx_status_unknown_string_is_ignored() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+        let script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: script.clone(),
+            }],
+        };
+        let txid = tx.compute_txid();
+        indexer.store_transaction(&tx).expect("store");
+        indexer.restore_pending_transaction(&txid).expect("restore");
+        let sh = ScriptHash::from_script(&script);
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &txid.to_string(),
+            "something unexpected happened",
+        )
+        .expect("ignore");
+
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn tx_status_invalid_txid_is_rejected() {
         let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
             .expect("indexer");

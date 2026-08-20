@@ -1008,4 +1008,13 @@ mod tests {
         assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 0);
         assert!(indexer.list_unspent(&sh).unwrap().is_empty());
     }
+
+    #[test]
+    fn restore_and_forget_missing_pending_transaction_are_none() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let txid = bitcoin::Txid::all_zeros();
+        assert!(indexer.restore_pending_transaction(&txid).unwrap().is_none());
+        assert!(indexer.forget_pending_transaction(&txid).unwrap().is_none());
+    }
 }
