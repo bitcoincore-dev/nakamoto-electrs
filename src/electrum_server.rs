@@ -1349,6 +1349,7 @@ mod tests {
         use std::collections::BTreeMap;
         use std::net::SocketAddr;
         use std::sync::{Arc, Mutex};
+        use std::time::Duration;
 
         #[derive(Clone, Default)]
         struct LiveSource {
@@ -1431,10 +1432,7 @@ mod tests {
         let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         stream
-            .write_all(
-                br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.headers.subscribe","params":[]}"#
-                    .as_slice(),
-            )
+            .write_all(br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.headers.subscribe","params":[]}"#)
             .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
