@@ -1,5 +1,6 @@
 use std::fs;
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::Once;
 use std::sync::mpsc;
 use std::sync::{
@@ -62,6 +63,9 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     let (handle, client_thread) = loop {
         if shutdown.load(Ordering::Relaxed) {
             return Ok(());
+        }
+        if clear_corrupt_nakamoto_cache(&cache_dir, &legacy_cache_dir, nk_network) {
+            continue;
         }
         let client = Client::<NodeReactor>::new()?;
         let handle = client.handle();
@@ -237,6 +241,9 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
         if shutdown.load(Ordering::Relaxed) {
             return Ok(());
         }
+        if clear_corrupt_nakamoto_cache(&cache_dir, &legacy_cache_dir, nk_network) {
+            continue;
+        }
         let client = Client::<NodeReactor>::new()?;
         let handle = client.handle();
         let (tx, rx) = mpsc::channel::<String>();
@@ -330,4 +337,92 @@ where
             let _ = handle.shutdown();
         })
         .expect("failed to spawn nakamoto shutdown watcher")
+}
+
+fn clear_corrupt_nakamoto_cache(
+    cache_dir: &Path,
+    legacy_cache_dir: &Path,
+    network: nakamoto_client::Network,
+) -> bool {
+    let network_cache_dir = cache_dir.join(network.as_str());
+    let headers = network_cache_dir.join("headers.db");
+    let filters = network_cache_dir.join("filters.db");
+
+    let headers_meta = fs::metadata(&headers);
+    let filters_meta = fs::metadata(&filters);
+
+    let headers_exists = headers_meta.is_ok();
+    let filters_exists = filters_meta.is_ok();
+
+    if !headers_exists && !filters_exists {
+        return false;
+    }
+
+    let headers_len = headers_meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let filters_len = filters_meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let headers_ok = headers_exists && headers_len > 0 && headers_len % 80 == 0;
+    let filters_ok = filters_exists && filters_len > 0 && filters_len % 64 == 0;
+    let header_records = headers_len / 80;
+    let filter_records = filters_len / 64;
+
+    if headers_ok && filters_ok && header_records == filter_records {
+        return false;
+    }
+
+    warn!(
+        "nakamoto cache is corrupt at {:?}: headers.db exists={} len={} filters.db exists={} len={} records={} vs {}; clearing {:?} and retrying",
+        network_cache_dir,
+        headers_exists,
+        headers_len,
+        filters_exists,
+        filters_len,
+        header_records,
+        filter_records,
+        cache_dir
+    );
+    let _ = fs::remove_dir_all(cache_dir);
+    let _ = fs::remove_dir_all(legacy_cache_dir);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn clears_partial_nakamoto_cache() {
+        let tmp = tempdir().unwrap();
+        let cache_dir = tmp.path().join(".nakamoto-electrs");
+        let legacy_cache_dir = tmp.path().join("legacy");
+        let network_cache_dir = cache_dir.join(nakamoto_client::Network::Signet.as_str());
+        fs::create_dir_all(&network_cache_dir).unwrap();
+        fs::write(network_cache_dir.join("headers.db"), []).unwrap();
+        fs::write(network_cache_dir.join("filters.db"), vec![0u8; 64]).unwrap();
+
+        assert!(clear_corrupt_nakamoto_cache(
+            &cache_dir,
+            &legacy_cache_dir,
+            nakamoto_client::Network::Signet
+        ));
+        assert!(!cache_dir.exists());
+    }
+
+    #[test]
+    fn keeps_consistent_nakamoto_cache() {
+        let tmp = tempdir().unwrap();
+        let cache_dir = tmp.path().join(".nakamoto-electrs");
+        let legacy_cache_dir = tmp.path().join("legacy");
+        let network_cache_dir = cache_dir.join(nakamoto_client::Network::Signet.as_str());
+        fs::create_dir_all(&network_cache_dir).unwrap();
+        fs::write(network_cache_dir.join("headers.db"), vec![0u8; 80]).unwrap();
+        fs::write(network_cache_dir.join("filters.db"), vec![0u8; 64]).unwrap();
+
+        assert!(!clear_corrupt_nakamoto_cache(
+            &cache_dir,
+            &legacy_cache_dir,
+            nakamoto_client::Network::Signet
+        ));
+        assert!(cache_dir.exists());
+    }
 }
