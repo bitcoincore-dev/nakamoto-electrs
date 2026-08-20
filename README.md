@@ -24,8 +24,10 @@ Bitcoin P2P Network
          ▼
 ┌───────────────────┐
 │  ElectrumServer   │  TCP JSON-RPC (Electrum protocol v1.4)
-│                   │  Answers: get_history, get_balance, listunspent, subscribe, broadcast, …
-│                   │  Locally broadcast txs also update pending balance/history/subscribe state
+│                   │  Answers: get_history, get_balance, listunspent, subscribe,
+│                   │  transaction.get, transaction.broadcast, block.header, block.headers, …
+│                   │  Connected/disconnected blocks and locally broadcast txs
+│                   │  update history, balance, UTXOs, and subscribe state
 └───────────────────┘
          │
          ▼
@@ -138,6 +140,9 @@ cargo test --test e2e_regtest -- --ignored
 * **Partial mempool balance** — locally broadcast transactions and nakamoto tx
   status changes are tracked as pending, but full peer-observed mempool
   modeling is still incomplete.
+* **Electrum live updates** — `headers.subscribe`, `scripthash.subscribe`,
+  `transaction.broadcast`, and `transaction.get` are wired to the nakamoto-
+  backed indexer and block source, including rollback/reorg notifications.
 * **Persistent index** — history, raw transaction lookups, and confirmed UTXOs
   survive restarts via the embedded store.
 * **nakamoto is SPV** — nakamoto downloads compact block filters (BIP 157/158)
