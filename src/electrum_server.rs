@@ -30,6 +30,7 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use bitcoin::consensus::encode::{serialize, serialize_hex};
+use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{Transaction, consensus::deserialize};
 use nakamoto_common::bitcoin::consensus::encode::deserialize as nk_deserialize;
 use serde_json::{Value, json};
@@ -331,15 +332,11 @@ fn handle_scripthash_subscribe(
     if !state.subscribed_scripthashes.contains(&sh) {
         state.subscribed_scripthashes.push(sh);
     }
-    let has_history = indexer.has_history(&sh);
-    // Return null if the script hash has no history yet, or a placeholder
-    // status hash otherwise.  Full status-hash computation (hash of all history
-    // entries) is a future improvement.
-    if has_history {
-        Ok(Value::String(sh.to_hex()))
-    } else {
-        Ok(Value::Null)
-    }
+    let history = indexer.get_history(&sh);
+    Ok(match compute_status_hash(&history) {
+        Some(status) => Value::String(status),
+        None => Value::Null,
+    })
 }
 
 fn handle_transaction_get(params: &Value, indexer: &Indexer) -> std::result::Result<Value, String> {
@@ -454,6 +451,22 @@ fn parse_scripthash(params: &Value) -> std::result::Result<ScriptHash, String> {
     Ok(ScriptHash::from_raw_bytes(bytes))
 }
 
+fn compute_status_hash(history: &[crate::indexer::TxEntry]) -> Option<String> {
+    if history.is_empty() {
+        return None;
+    }
+
+    let mut data = String::new();
+    for entry in history {
+        data.push_str(&entry.txid.to_string());
+        data.push(':');
+        data.push_str(&entry.height.to_string());
+        data.push(':');
+    }
+
+    Some(sha256::Hash::hash(data.as_bytes()).to_string())
+}
+
 // ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
@@ -525,5 +538,15 @@ mod tests {
         let resp = dispatch_request(raw, &mut state, &indexer, &source, &Metrics::new(), None);
         assert_eq!(resp["result"], Value::Null);
         assert_eq!(resp["id"], json!(1));
+    }
+
+    #[test]
+    fn compute_status_hash_uses_electrum_format() {
+        let txid = "0".repeat(64).parse().unwrap();
+        let history = vec![crate::indexer::TxEntry { txid, height: 1 }];
+        assert_eq!(
+            compute_status_hash(&history).as_deref(),
+            Some("12b132b4f9cac2ddb0a05030bf14ab07a46352fe787aa4f0e245fac197dd5b48")
+        );
     }
 }
