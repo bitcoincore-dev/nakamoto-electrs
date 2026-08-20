@@ -316,11 +316,10 @@ jobs:
       - name: cargo build
         run: cargo build --all-targets
 
-      - name: Exercise all bins
+      - name: Exercise bridge binary
         run: |
           set -euo pipefail
 
-          # Main bridge binary on regtest (expects to keep running until timeout).
           set +e
           timeout 20s cargo run --bin nakamoto-electrs -- \
             --network regtest \
@@ -331,18 +330,25 @@ jobs:
           if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
             exit "$status"
           fi
+      - name: Exercise all examples sequentially
+        run: |
+          set -euo pipefail
 
-          # Standalone nakamoto binary (long-running service; timeout is expected).
           set +e
-          timeout 10s cargo run --bin nakamoto
+          timeout 10s cargo run --example nakamoto
           status=$?
           set -e
           if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
             exit "$status"
           fi
 
-          # Standalone electrs binary (feature-gated).
-          cargo run --features electrs-bin --bin electrs -- --help
+          set +e
+          timeout 10s cargo run --features electrs-bin --example electrs
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+            exit "$status"
+          fi
 
       - name: Mine additional regtest blocks after exercise
         run: |
