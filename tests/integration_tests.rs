@@ -1098,6 +1098,108 @@ fn electrum_disconnect_reverts_headers_and_scripthash_state() {
 }
 
 #[test]
+fn electrum_block_header_queries_return_indexed_data() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let script = p2pkh_script();
+    let block = mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![script.clone()]);
+    let header_hex = hex::encode(bitcoin::consensus::encode::serialize(&block.header));
+    source.push(BlockEvent::Connected {
+        block,
+        height: 1,
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while indexer.tip_height() < 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for indexed block"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let header: serde_json::Value = {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.block.header","params":[1]}}"#
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+
+        let mut line = String::new();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "timed out waiting for header response");
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read header response: {err}"),
+            }
+        }
+        serde_json::from_str(line.trim()).unwrap()
+    };
+    assert_eq!(header["result"], serde_json::json!(header_hex));
+
+    let headers: serde_json::Value = {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.block.headers","params":[1,1]}}"#
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+
+        let mut line = String::new();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "timed out waiting for headers response");
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read headers response: {err}"),
+            }
+        }
+        serde_json::from_str(line.trim()).unwrap()
+    };
+    assert_eq!(headers["result"]["count"], serde_json::json!(1));
+    assert_eq!(headers["result"]["hex"], serde_json::json!(header_hex));
+    assert_eq!(headers["result"]["max"], serde_json::json!(2016));
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+#[test]
 fn indexer_restores_and_forgets_pending_transactions() {
     let indexer = make_indexer(Metrics::new());
 
