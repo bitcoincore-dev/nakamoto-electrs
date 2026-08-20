@@ -82,6 +82,8 @@ jobs:
           regtest=1
           server=1
           daemon=1
+
+          [regtest]
           rpcuser=${{ env.BITCOIND_RPC_USER }}
           rpcpassword=${{ env.BITCOIND_RPC_PASS }}
           rpcport=18443
