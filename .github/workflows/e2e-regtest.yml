@@ -23,6 +23,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Cache Cargo registry & build artefacts
         uses: actions/cache@v4
@@ -35,6 +37,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-e2e-
             ${{ runner.os }}-cargo-
+
+      - name: cargo fmt (warn only)
+        run: cargo fmt -- --check
+        continue-on-error: true
 
       # ---------------------------------------------------------------------------
       # Detect and install the latest Bitcoin Core prebuilt binaries
