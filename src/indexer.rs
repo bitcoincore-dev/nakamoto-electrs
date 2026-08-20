@@ -526,6 +526,32 @@ mod tests {
         Block { header, txdata: vec![tx] }
     }
 
+    fn make_spend_block(height: u32, prevout: bitcoin::OutPoint, script: Vec<u8>) -> Block {
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: prevout,
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: Builder::from(script).into_script(),
+            }],
+        };
+        let header = BlockHeader {
+            version: Version::ONE,
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: height,
+            bits: CompactTarget::from_consensus(0x1d00ffff),
+            nonce: 0,
+        };
+        Block { header, txdata: vec![tx] }
+    }
+
     fn p2pkh_script() -> Vec<u8> {
         let mut s = vec![0x76u8, 0xa9, 0x14];
         s.extend_from_slice(&[0u8; 20]);
@@ -606,5 +632,31 @@ mod tests {
         state.apply_block(&block, 1).expect("apply");
         let tx = state.get_transaction(&txid).expect("query tx");
         assert!(tx.is_some());
+    }
+
+    #[test]
+    fn restart_preserves_rollback_state() {
+        let dir = tempfile::tempdir().expect("temp dir").keep();
+        let mut state = IndexState::new(dir.clone()).expect("state");
+
+        let script = p2pkh_script();
+        let fund_block = make_block(1, vec![script.clone()]);
+        let fund_txid = fund_block.txdata[0].compute_txid();
+        let prevout = bitcoin::OutPoint::new(fund_txid, 0);
+        state.apply_block(&fund_block, 1).expect("apply fund");
+
+        let sh = ScriptHash::from_script(&Builder::from(script.clone()).into_script());
+        assert_eq!(state.get_balance(&sh).unwrap(), 1000);
+
+        let spend_block = make_spend_block(2, prevout, vec![0x6au8]);
+        state.apply_block(&spend_block, 2).expect("apply spend");
+        assert_eq!(state.get_balance(&sh).unwrap(), 0);
+        drop(state);
+
+        let mut reopened = IndexState::new(dir).expect("reopen");
+        assert_eq!(reopened.get_balance(&sh).unwrap(), 0);
+        reopened.rollback_height(2).expect("rollback after restart");
+        assert_eq!(reopened.get_balance(&sh).unwrap(), 1000);
+        assert_eq!(reopened.get_history(&sh).len(), 1);
     }
 }
