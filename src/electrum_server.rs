@@ -896,7 +896,6 @@ mod tests {
                 crossbeam_channel::never()
             }
             fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
-                use bitcoin::hashes::Hash;
                 let height = self.headers.keys().next_back().copied().unwrap_or(0);
                 let header = self.headers.get(&height).copied().unwrap_or_else(|| Self::header(0));
                 Ok((height, header.block_hash()))
