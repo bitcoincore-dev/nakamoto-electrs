@@ -779,16 +779,15 @@ mod tests {
         let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(mock.clone());
         let dir = tempfile::tempdir().expect("temp").keep();
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
-        let resp = handle_transaction_broadcast(
-            &params,
-            &Metrics::new(),
-            Some(&broadcaster),
-            &indexer,
-        )
-            .expect("broadcast");
+        let resp =
+            handle_transaction_broadcast(&params, &Metrics::new(), Some(&broadcaster), &indexer)
+                .expect("broadcast");
         assert_eq!(resp, Value::String(txid));
         assert_eq!(*mock.seen.lock().unwrap(), Some(tx.compute_txid()));
-        assert_eq!(indexer.get_transaction(&tx.compute_txid()).unwrap(), Some(tx));
+        assert_eq!(
+            indexer.get_transaction(&tx.compute_txid()).unwrap(),
+            Some(tx)
+        );
     }
 
     #[test]
