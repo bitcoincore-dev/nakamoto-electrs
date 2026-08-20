@@ -44,7 +44,7 @@ use serde_json::{Value, json};
 use tracing::{debug, error, info, warn};
 
 use crate::block_source::BlockSource;
-use crate::indexer::{Indexer, ScriptHash};
+use crate::indexer::{Indexer, MempoolEntry, ScriptHash, TxEntry};
 use crate::metrics::Metrics;
 
 pub trait TransactionBroadcaster: Send + Sync {
@@ -316,7 +316,13 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                                     let mut state = state.lock().expect("electrum state poisoned");
                                     let subs = state.subscribed_scripthashes.clone();
                                     for sh in subs {
-                                        let status = compute_status_hash(&indexer.get_history(&sh));
+                                        let status = match script_status(&indexer, &sh) {
+                                            Ok(status) => status,
+                                            Err(e) => {
+                                                error!("status lookup failed: {e:#}");
+                                                continue;
+                                            }
+                                        };
                                         let entry = state.status_by_scripthash.entry(sh).or_insert(None);
                                         if *entry != status {
                                             *entry = status.clone();
@@ -376,7 +382,13 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                                     if !affected.contains(&sh) {
                                         continue;
                                     }
-                                    let status = compute_status_hash(&indexer.get_history(&sh));
+                                    let status = match script_status(&indexer, &sh) {
+                                        Ok(status) => status,
+                                        Err(e) => {
+                                            error!("status lookup failed: {e:#}");
+                                            continue;
+                                        }
+                                    };
                                     let entry = state.status_by_scripthash.entry(sh).or_insert(None);
                                     if *entry != status {
                                         *entry = status.clone();
@@ -609,8 +621,7 @@ fn handle_scripthash_subscribe(
     if !state.subscribed_scripthashes.contains(&sh) {
         state.subscribed_scripthashes.push(sh);
     }
-    let history = indexer.get_history(&sh);
-    let status = compute_status_hash(&history);
+    let status = script_status(indexer, &sh).map_err(|e| format!("status lookup failed: {e:#}"))?;
     state.status_by_scripthash.insert(sh, status.clone());
     Ok(match status {
         Some(status) => Value::String(status),
@@ -746,13 +757,25 @@ fn parse_scripthash(params: &Value) -> std::result::Result<ScriptHash, String> {
     Ok(ScriptHash::from_raw_bytes(bytes))
 }
 
-fn compute_status_hash(history: &[crate::indexer::TxEntry]) -> Option<String> {
-    if history.is_empty() {
+fn script_status(indexer: &Indexer, sh: &ScriptHash) -> Result<Option<String>> {
+    let history = indexer.get_history(sh);
+    let mempool = indexer.get_mempool(sh)?;
+    Ok(compute_status_hash(&history, &mempool))
+}
+
+fn compute_status_hash(history: &[TxEntry], mempool: &[MempoolEntry]) -> Option<String> {
+    if history.is_empty() && mempool.is_empty() {
         return None;
     }
 
     let mut data = String::new();
     for entry in history {
+        data.push_str(&entry.txid.to_string());
+        data.push(':');
+        data.push_str(&entry.height.to_string());
+        data.push(':');
+    }
+    for entry in mempool {
         data.push_str(&entry.txid.to_string());
         data.push(':');
         data.push_str(&entry.height.to_string());
@@ -1030,9 +1053,16 @@ mod tests {
             sequence: 0,
         }];
         assert_eq!(
-            compute_status_hash(&history).as_deref(),
+            compute_status_hash(&history, &[]).as_deref(),
             Some("12b132b4f9cac2ddb0a05030bf14ab07a46352fe787aa4f0e245fac197dd5b48")
         );
+
+        let mempool = vec![crate::indexer::MempoolEntry {
+            txid,
+            height: 0,
+            fee: 10,
+        }];
+        assert_ne!(compute_status_hash(&history, &[]), compute_status_hash(&history, &mempool));
     }
 
     #[test]
