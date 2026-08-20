@@ -1,7 +1,10 @@
 use std::fs;
 use std::io::Cursor;
 use std::net::TcpStream;
+use std::panic;
+use std::panic::PanicHookInfo;
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::mpsc;
 use std::sync::{
@@ -32,6 +35,8 @@ use crate::{
 type NodeReactor = Reactor<TcpStream>;
 
 const CLIENT_STARTUP_WAIT: Duration = Duration::from_secs(2);
+const NAKAMOTO_CLIENT_VERSION: &str = "0.4.0";
+const NAKAMOTO_P2P_VERSION: &str = "0.4.0";
 static SHUTDOWN_HANDLER_INSTALLED: Once = Once::new();
 
 pub fn run_bridge(cfg: Config) -> Result<()> {
@@ -73,10 +78,38 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     let legacy_cache_dir = cfg.index_dir.join(".nakamoto");
     let shutdown = Arc::new(AtomicBool::new(false));
     let startup_complete = Arc::new(AtomicBool::new(false));
+    let startup_panic = Arc::new(AtomicBool::new(false));
+    let startup_panic_msg = Arc::new(Mutex::new(None::<String>));
+    install_startup_panic_handler(Arc::clone(&startup_panic), Arc::clone(&startup_panic_msg))?;
     install_shutdown_handler(Arc::clone(&shutdown))?;
     let (handle, client_thread) = loop {
         if shutdown.load(Ordering::Relaxed) {
             return Ok(());
+        }
+        if startup_panic.swap(false, Ordering::AcqRel) {
+            let msg = startup_panic_msg
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
+            if let Some(msg) = msg {
+                warn!(
+                    "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}): {}; clearing {:?} and retrying",
+                    NAKAMOTO_CLIENT_VERSION,
+                    NAKAMOTO_P2P_VERSION,
+                    msg,
+                    cache_dir
+                );
+            } else {
+                warn!(
+                    "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}); clearing {:?} and retrying",
+                    NAKAMOTO_CLIENT_VERSION,
+                    NAKAMOTO_P2P_VERSION,
+                    cache_dir
+                );
+            }
+            let _ = fs::remove_dir_all(&cache_dir);
+            let _ = fs::remove_dir_all(&legacy_cache_dir);
+            continue;
         }
         let client = Client::<NodeReactor>::new()?;
         let handle = client.handle();
@@ -98,7 +131,9 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
             Ok(err) if is_genesis_mismatch(&err) => {
                 log_cached_genesis("bridge", &cache_dir, nk_network.genesis_hash());
                 warn!(
-                    "nakamoto cache mismatch detected; clearing {:?} and retrying (expected genesis {})",
+                    "nakamoto cache mismatch detected (nakamoto-client {}, nakamoto-p2p {}); clearing {:?} and retrying (expected genesis {}; local cache will be rebuilt)",
+                    NAKAMOTO_CLIENT_VERSION,
+                    NAKAMOTO_P2P_VERSION,
                     cache_dir,
                     nk_network.genesis_hash()
                 );
@@ -121,6 +156,32 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
                 break (handle, thread_handle);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if startup_panic.swap(false, Ordering::AcqRel) {
+                    let msg = startup_panic_msg
+                        .lock()
+                        .ok()
+                        .and_then(|mut slot| slot.take());
+                    if let Some(msg) = msg {
+                        warn!(
+                            "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}): {}; clearing {:?} and retrying",
+                            NAKAMOTO_CLIENT_VERSION,
+                            NAKAMOTO_P2P_VERSION,
+                            msg,
+                            cache_dir
+                        );
+                    } else {
+                        warn!(
+                            "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}); clearing {:?} and retrying",
+                            NAKAMOTO_CLIENT_VERSION,
+                            NAKAMOTO_P2P_VERSION,
+                            cache_dir
+                        );
+                    }
+                    let _ = fs::remove_dir_all(&cache_dir);
+                    let _ = fs::remove_dir_all(&legacy_cache_dir);
+                    let _ = thread_handle.join();
+                    continue;
+                }
                 let _ = thread_handle.join();
                 return Err(anyhow::anyhow!(
                     "nakamoto client startup channel disconnected"
@@ -260,10 +321,40 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
     );
     let shutdown = Arc::new(AtomicBool::new(false));
     let startup_complete = Arc::new(AtomicBool::new(false));
+    let startup_panic = Arc::new(AtomicBool::new(false));
+    let startup_panic_msg = Arc::new(Mutex::new(None::<String>));
+    install_startup_panic_handler(Arc::clone(&startup_panic), Arc::clone(&startup_panic_msg))?;
     install_shutdown_handler(Arc::clone(&shutdown))?;
     let (handle, client_runner) = loop {
         if shutdown.load(Ordering::Relaxed) {
             return Ok(());
+        }
+        if startup_panic.swap(false, Ordering::AcqRel) {
+            let msg = startup_panic_msg
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
+            if let Some(msg) = msg {
+                warn!(
+                    target: "nakamoto",
+                    "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}): {}; clearing {:?} and retrying",
+                    NAKAMOTO_CLIENT_VERSION,
+                    NAKAMOTO_P2P_VERSION,
+                    msg,
+                    cache_dir
+                );
+            } else {
+                warn!(
+                    target: "nakamoto",
+                    "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}); clearing {:?} and retrying",
+                    NAKAMOTO_CLIENT_VERSION,
+                    NAKAMOTO_P2P_VERSION,
+                    cache_dir
+                );
+            }
+            let _ = fs::remove_dir_all(&cache_dir);
+            let _ = fs::remove_dir_all(&legacy_cache_dir);
+            continue;
         }
         let client = Client::<NodeReactor>::new()?;
         let handle = client.handle();
@@ -286,7 +377,9 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
                 log_cached_genesis("nakamoto", &cache_dir, nk_network.genesis_hash());
                 warn!(
                     target: "nakamoto",
-                    "nakamoto cache mismatch detected; clearing {:?} and retrying (expected genesis {})",
+                    "nakamoto cache mismatch detected (nakamoto-client {}, nakamoto-p2p {}); clearing {:?} and retrying (expected genesis {}; local cache will be rebuilt)",
+                    NAKAMOTO_CLIENT_VERSION,
+                    NAKAMOTO_P2P_VERSION,
                     cache_dir,
                     nk_network.genesis_hash()
                 );
@@ -309,6 +402,34 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
                 break (handle, thread_handle);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if startup_panic.swap(false, Ordering::AcqRel) {
+                    let msg = startup_panic_msg
+                        .lock()
+                        .ok()
+                        .and_then(|mut slot| slot.take());
+                    if let Some(msg) = msg {
+                        warn!(
+                            target: "nakamoto",
+                            "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}): {}; clearing {:?} and retrying",
+                            NAKAMOTO_CLIENT_VERSION,
+                            NAKAMOTO_P2P_VERSION,
+                            msg,
+                            cache_dir
+                        );
+                    } else {
+                        warn!(
+                            target: "nakamoto",
+                            "nakamoto startup panicked (nakamoto-client {}, nakamoto-p2p {}); clearing {:?} and retrying",
+                            NAKAMOTO_CLIENT_VERSION,
+                            NAKAMOTO_P2P_VERSION,
+                            cache_dir
+                        );
+                    }
+                    let _ = fs::remove_dir_all(&cache_dir);
+                    let _ = fs::remove_dir_all(&legacy_cache_dir);
+                    let _ = thread_handle.join();
+                    continue;
+                }
                 let _ = thread_handle.join();
                 return Err(anyhow::anyhow!(
                     "nakamoto client startup channel disconnected"
@@ -368,6 +489,23 @@ where
 
 fn is_genesis_mismatch(err: &str) -> bool {
     err.contains("stored genesis header doesn't match network genesis")
+}
+
+fn install_startup_panic_handler(
+    startup_panic: Arc<AtomicBool>,
+    startup_panic_msg: Arc<Mutex<Option<String>>>,
+) -> Result<()> {
+    static PANIC_HANDLER_INSTALLED: Once = Once::new();
+    PANIC_HANDLER_INSTALLED.call_once(|| {
+        panic::set_hook(Box::new(move |info: &PanicHookInfo<'_>| {
+            startup_panic.store(true, Ordering::SeqCst);
+            let msg = info.to_string();
+            if let Ok(mut slot) = startup_panic_msg.lock() {
+                *slot = Some(msg);
+            }
+        }));
+    });
+    Ok(())
 }
 
 fn log_cached_genesis(mode: &str, cache_dir: &Path, expected: nakamoto_common::block::BlockHash) {
