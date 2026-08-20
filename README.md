@@ -17,7 +17,7 @@ Bitcoin P2P Network
          │  BlockEvent stream
          ▼
 ┌───────────────────┐
-│     Indexer       │  script-hash → tx-history map (in-memory)
+│     Indexer       │  script-hash → tx-history/UTXO map (persistent)
 │                   │  Handles reorgs via BlockDisconnected rollback
 └────────┬──────────┘
          │  queries
@@ -115,11 +115,8 @@ Port:   60001   (testnet default)
 # Unit + integration tests (fast, no network)
 cargo test
 
-# End-to-end regtest tests (requires a running bitcoind -regtest)
-BITCOIND_RPC_URL=http://127.0.0.1:18443 \
-BITCOIND_RPC_USER=user \
-BITCOIND_RPC_PASS=pass \
-cargo test --test e2e_regtest -- --ignored
+# End-to-end regtest tests (starts a local repo-local regtest node if needed)
+./scripts/run-e2e-regtest-ignored.sh --verbose
 ```
 
 ## Module overview
