@@ -341,12 +341,7 @@ impl IndexState {
 
     fn get_history(&self, sh: &ScriptHash) -> Vec<TxEntry> {
         let mut entries = self.history.get(sh).cloned().unwrap_or_default();
-        entries.sort_by_key(|e| {
-            (
-                if e.height == 0 { u32::MAX } else { e.height },
-                e.sequence,
-            )
-        });
+        entries.sort_by_key(|e| (if e.height == 0 { u32::MAX } else { e.height }, e.sequence));
         entries
     }
 
