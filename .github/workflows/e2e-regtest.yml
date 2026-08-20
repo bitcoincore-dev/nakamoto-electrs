@@ -55,16 +55,12 @@ jobs:
       - name: Detect latest Bitcoin Core stable and RC versions
         id: btc_version
         run: |
-          # Fetch the 30 most recent releases (includes prereleases / RCs).
-          RELEASES=$(curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/bitcoin/bitcoin/releases?per_page=30")
-
-          # Emit both stable_version and rc_version.
-          eval "$(echo "$RELEASES" | python3 -c 'import json, sys, re; releases = json.load(sys.stdin); non_draft = [r for r in releases if not r.get("draft", False)]; non_draft.sort(key=lambda r: r.get("published_at", ""), reverse=True); assert non_draft, "No Bitcoin Core releases found"; is_rc = lambda r: r.get("prerelease", False) or re.search(r"rc\d+$", r.get("tag_name", ""), re.IGNORECASE); stable = next((r for r in non_draft if not is_rc(r)), None); rc = next((r for r in non_draft if is_rc(r)), None); stable_ver = stable["tag_name"].lstrip("v") if stable else non_draft[0]["tag_name"].lstrip("v"); rc_ver = rc["tag_name"].lstrip("v") if rc else stable_ver; print(f"STABLE_VERSION={stable_ver}"); print(f"RC_VERSION={rc_ver}")')"
+          eval "$(./scripts/detect-bitcoin-core-versions.sh)"
 
           echo "stable_version=${STABLE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "stable_base_url=${STABLE_BASE_URL}" >> "$GITHUB_OUTPUT"
           echo "rc_version=${RC_VERSION}"         >> "$GITHUB_OUTPUT"
+          echo "rc_base_url=${RC_BASE_URL}"       >> "$GITHUB_OUTPUT"
           echo "Stable : ${STABLE_VERSION}"
           echo "RC     : ${RC_VERSION}"
 
@@ -74,9 +70,9 @@ jobs:
       - name: Download and install Bitcoin Core stable binaries
         run: |
           VERSION="${{ steps.btc_version.outputs.stable_version }}"
+          BASE_URL="${{ steps.btc_version.outputs.stable_base_url }}"
           ARCH="x86_64-linux-gnu"
           TARBALL="bitcoin-${VERSION}-${ARCH}.tar.gz"
-          BASE_URL="https://bitcoincore.org/bin/bitcoin-core-${VERSION}"
 
           echo "Downloading stable ${BASE_URL}/${TARBALL}"
           curl -fsSL -O "${BASE_URL}/${TARBALL}"
@@ -94,6 +90,7 @@ jobs:
         run: |
           STABLE="${{ steps.btc_version.outputs.stable_version }}"
           RC="${{ steps.btc_version.outputs.rc_version }}"
+          BASE_URL="${{ steps.btc_version.outputs.rc_base_url }}"
           ARCH="x86_64-linux-gnu"
 
           if [ "$RC" = "$STABLE" ]; then
@@ -102,7 +99,6 @@ jobs:
             sudo ln -sf /usr/local/bin/bitcoin-cli /usr/local/bin/bitcoin-cli-rc
           else
             TARBALL="bitcoin-${RC}-${ARCH}.tar.gz"
-            BASE_URL="https://bitcoincore.org/bin/bitcoin-core-${RC}"
 
             echo "Downloading RC ${BASE_URL}/${TARBALL}"
             curl -fsSL -O "${BASE_URL}/${TARBALL}"
