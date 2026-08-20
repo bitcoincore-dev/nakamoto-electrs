@@ -129,7 +129,7 @@ cargo test --test e2e_regtest -- --ignored
 | Module | Description |
 |---|---|
 | `block_source` | `BlockSource` trait — abstract block/header provider |
-| `nakamoto_source` | `NakamotoBlockSource` — bridges nakamoto Handle to `BlockSource` |
+| `nakamoto_source` | `NakamotoBlockSource` — bridges nakamoto Handle to `BlockSource` with block cache + point queries |
 | `config` | Unified `Config` struct + CLI arg parser |
 | `indexer` | Script-hash indexer driven by `BlockEvent` stream |
 | `electrum_server` | Electrum JSON-RPC TCP server |
