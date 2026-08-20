@@ -1082,6 +1082,104 @@ mod tests {
     }
 
     #[test]
+    fn tx_status_stale_clears_pending_transaction() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+        let script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: script.clone(),
+            }],
+        };
+        let txid = tx.compute_txid();
+        indexer.store_transaction(&tx).expect("store");
+        indexer.restore_pending_transaction(&txid).expect("restore");
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &txid.to_string(),
+            "transaction was replaced by deadbeef in block 0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("forget");
+
+        let sh = ScriptHash::from_script(&script);
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 0);
+        assert!(rx.recv().map(|affected| affected == vec![sh]).unwrap());
+    }
+
+    #[test]
+    fn tx_status_ignored_for_unconfirmed_and_acknowledged() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+        let script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: script.clone(),
+            }],
+        };
+        let txid = tx.compute_txid();
+        indexer.store_transaction(&tx).expect("store");
+        indexer.restore_pending_transaction(&txid).expect("restore");
+        let sh = ScriptHash::from_script(&script);
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &txid.to_string(),
+            "transaction is unconfirmed",
+        )
+        .expect("ignore");
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &txid.to_string(),
+            "transaction was acknowledged by peer 127.0.0.1:8333",
+        )
+        .expect("ignore");
+
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn tx_status_invalid_txid_is_rejected() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let err = apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            "not-a-txid",
+            "transaction has been reverted",
+        )
+        .expect_err("invalid txid should fail");
+        assert!(err.to_string().contains("invalid txid"));
+    }
+
+    #[test]
     fn transaction_broadcast_emits_pending_change_notification() {
         use std::sync::{Arc, Mutex};
 
