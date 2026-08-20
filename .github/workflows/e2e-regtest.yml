@@ -271,6 +271,45 @@ jobs:
             -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
             -rpcport=18445 getblockchaininfo
 
+      - name: Mine additional regtest blocks on stable
+        run: |
+          set -euo pipefail
+
+          RPC_USER="${BITCOIND_RPC_USER}"
+          RPC_PASS="${BITCOIND_RPC_PASS}"
+
+          bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcport=18443 createwallet e2e >/dev/null 2>&1 || true
+
+          MINE_ADDR=$(bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcwallet=e2e -rpcport=18443 getnewaddress)
+
+          bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcwallet=e2e -rpcport=18443 generatetoaddress 101 "${MINE_ADDR}" >/dev/null
+
+          for i in $(seq 1 30); do
+            STABLE_BLOCKS=$(bitcoin-cli -regtest \
+              -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+              -rpcport=18443 getblockcount)
+            RC_BLOCKS=$(bitcoin-cli -regtest \
+              -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+              -rpcport=18445 getblockcount)
+            if [ "${STABLE_BLOCKS}" = "${RC_BLOCKS}" ]; then
+              echo "Nodes synced at height ${STABLE_BLOCKS}"
+              break
+            fi
+            echo "Waiting for RC sync... stable=${STABLE_BLOCKS} rc=${RC_BLOCKS} (${i}/30)"
+            sleep 1
+          done
+
+          if [ "${STABLE_BLOCKS}" != "${RC_BLOCKS}" ]; then
+            echo "RC did not sync after mining additional blocks" >&2
+            exit 1
+          fi
+
       # ---------------------------------------------------------------------------
       # Build the project and run the e2e regtest tests
       # ---------------------------------------------------------------------------
