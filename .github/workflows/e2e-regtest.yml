@@ -61,7 +61,7 @@ jobs:
             "https://api.github.com/repos/bitcoin/bitcoin/releases?per_page=30")
 
           # Emit both stable_version and rc_version.
-          eval "$(echo "$RELEASES" | python3 -c 'import json, sys, re; releases = json.load(sys.stdin); non_draft = [r for r in releases if not r.get("draft", False)]; non_draft.sort(key=lambda r: r.get("published_at", ""), reverse=True); assert non_draft, "No Bitcoin Core releases found"; RC_RE = re.compile(r"rc\d+$", re.IGNORECASE); stable = next((r for r in non_draft if not RC_RE.search(r["tag_name"])), None); rc = next((r for r in non_draft if RC_RE.search(r["tag_name"])), None); stable_ver = stable["tag_name"].lstrip("v") if stable else non_draft[0]["tag_name"].lstrip("v"); rc_ver = rc["tag_name"].lstrip("v") if rc else stable_ver; print(f"STABLE_VERSION={stable_ver}"); print(f"RC_VERSION={rc_ver}")')"
+          eval "$(echo "$RELEASES" | python3 -c 'import json, sys, re; releases = json.load(sys.stdin); non_draft = [r for r in releases if not r.get("draft", False)]; non_draft.sort(key=lambda r: r.get("published_at", ""), reverse=True); assert non_draft, "No Bitcoin Core releases found"; is_rc = lambda r: r.get("prerelease", False) or re.search(r"rc\d+$", r.get("tag_name", ""), re.IGNORECASE); stable = next((r for r in non_draft if not is_rc(r)), None); rc = next((r for r in non_draft if is_rc(r)), None); stable_ver = stable["tag_name"].lstrip("v") if stable else non_draft[0]["tag_name"].lstrip("v"); rc_ver = rc["tag_name"].lstrip("v") if rc else stable_ver; print(f"STABLE_VERSION={stable_ver}"); print(f"RC_VERSION={rc_ver}")')"
 
           echo "stable_version=${STABLE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "rc_version=${RC_VERSION}"         >> "$GITHUB_OUTPUT"
