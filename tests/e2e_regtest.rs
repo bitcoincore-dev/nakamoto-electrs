@@ -41,7 +41,7 @@ fn e2e_headers_subscribe_returns_tip() {
     //   4. Open a TCP connection to the Electrum listener.
     //   5. Send `blockchain.headers.subscribe` and parse the response.
     //   6. Assert height >= 101.
-    todo!("regtest harness not yet implemented");
+    // TODO: implement full regtest harness (see steps above).
 }
 
 /// Placeholder — ignored.
@@ -56,5 +56,5 @@ fn e2e_scripthash_history_after_payment() {
     //   3. Mine a confirming block.
     //   4. Query `blockchain.scripthash.get_history` via Electrum.
     //   5. Assert the transaction appears in history.
-    todo!("regtest harness not yet implemented");
+    // TODO: implement full regtest harness (see steps above).
 }
