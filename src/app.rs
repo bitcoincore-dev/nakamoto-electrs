@@ -3,14 +3,14 @@ use std::fs;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use nakamoto_client::{Client, handle::Handle as _};
 use nakamoto_common::bitcoin::network::constants::ServiceFlags;
 use nakamoto_client::Event;
 use nakamoto_net_poll::Reactor;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
@@ -51,6 +51,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     nk_cfg.root = cfg.index_dir.join("nakamoto");
     nk_cfg.connect = cfg.nakamoto_peers.clone();
     let cache_dir = nk_cfg.root.join(".nakamoto");
+    let legacy_cache_dir = cfg.index_dir.join(".nakamoto");
     let (handle, client_thread) = loop {
         let client = Client::<NodeReactor>::new()?;
         let handle = client.handle();
@@ -72,6 +73,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
                     cache_dir
                 );
                 let _ = fs::remove_dir_all(&cache_dir);
+                let _ = fs::remove_dir_all(&legacy_cache_dir);
                 let _ = thread_handle.join();
                 continue;
             }
@@ -109,10 +111,46 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     };
 
     info!("waiting for nakamoto to connect to peers...");
-    match handle.wait_for_peers(1, ServiceFlags::NONE) {
-        Ok(_) => info!("nakamoto connected to peers"),
-        Err(e) => {
-            error!("wait_for_peers failed: {e}; continuing anyway");
+    let (peers_tx, peers_rx) = mpsc::channel::<Result<(), String>>();
+    let wait_handle = {
+        let handle = handle.clone();
+        thread::Builder::new()
+            .name("wait-for-peers".into())
+            .spawn(move || {
+                let result = handle
+                    .wait_for_peers(1, ServiceFlags::NONE)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let _ = peers_tx.send(result);
+            })?
+    };
+    let started_at = Instant::now();
+    let mut last_warn = Instant::now();
+    loop {
+        match peers_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => {
+                info!("nakamoto connected to peers");
+                break;
+            }
+            Ok(Err(e)) => {
+                error!("wait_for_peers failed: {e}; continuing anyway");
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if started_at.elapsed() >= Duration::from_secs(15)
+                    && last_warn.elapsed() >= Duration::from_secs(15)
+                {
+                    warn!(
+                        "still waiting for nakamoto to connect to peers after {:?}",
+                        started_at.elapsed()
+                    );
+                    last_warn = Instant::now();
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                error!("wait_for_peers failed: command channel disconnected; continuing anyway");
+                break;
+            }
         }
     }
 
@@ -129,6 +167,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
 
     let _ = client_thread.join();
     let _ = fee_rate_thread.join();
+    let _ = wait_handle.join();
     Ok(())
 }
 
@@ -149,6 +188,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
     config.connect = cfg.nakamoto_peers.clone();
 
     let cache_dir = config.root.join(".nakamoto");
+    let legacy_cache_dir = cfg.index_dir.join(".nakamoto");
     let (handle, client_runner) = loop {
         let client = Client::<NodeReactor>::new()?;
         let handle = client.handle();
@@ -171,6 +211,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
                     cache_dir
                 );
                 let _ = fs::remove_dir_all(&cache_dir);
+                let _ = fs::remove_dir_all(&legacy_cache_dir);
                 let _ = thread_handle.join();
                 continue;
             }

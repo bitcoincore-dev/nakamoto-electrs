@@ -280,6 +280,16 @@ mod tests {
     }
 
     #[test]
+    fn signet_and_testnet_use_distinct_data_dirs() {
+        let signet = Config::new(Network::Signet);
+        let testnet = Config::new(Network::Testnet);
+
+        assert!(signet.index_dir.to_string_lossy().contains("signet"));
+        assert!(testnet.index_dir.to_string_lossy().contains("testnet"));
+        assert_ne!(signet.index_dir, testnet.index_dir);
+    }
+
+    #[test]
     fn cli_defaults_bridge_mode() {
         let cli = Cli::parse_from(["nakamoto-electrs"]);
         match cli.into_mode() {
