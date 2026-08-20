@@ -124,14 +124,14 @@ jobs:
             getblockchaininfo
 
       # ---------------------------------------------------------------------------
-      # Build the project and run the ignored e2e tests
+      # Build the project and compile the placeholder e2e regtest target
       # ---------------------------------------------------------------------------
       - name: cargo build
         run: cargo build --all-targets
 
       - name: Build the e2e regtest test target
         run: |
-          cargo test --test e2e_regtest
+          cargo build --test e2e_regtest
 
       # ---------------------------------------------------------------------------
       # Cleanup
