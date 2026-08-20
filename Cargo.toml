@@ -15,14 +15,14 @@ path = "examples/nakamoto.rs"
 
 [features]
 # Enable the standalone `electrs` binary (requires librocksdb at link time).
-electrs-bin = []
+electrs-bin = ["dep:electrs"]
 
 [dependencies]
 anyhow = "1.0"
 bitcoin = "0.32.102"
 clap = { version = "4.5", features = ["derive"] }
 crossbeam-channel = "0.5"
-electrs = { version = "0.10.10", default-features = false }
+electrs = { version = "0.10.10", default-features = false, optional = true }
 hex = "0.4"
 nakamoto-chain = "0.4"
 nakamoto-client = "0.4"
