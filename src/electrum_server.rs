@@ -29,9 +29,9 @@ use std::sync::Arc;
 use std::thread;
 
 use anyhow::{Context, Result};
-use bitcoin::consensus::encode::serialize_hex;
+use bitcoin::consensus::encode::{serialize, serialize_hex};
 use bitcoin::{Transaction, consensus::deserialize};
-use nakamoto_client::handle::Handle as NakamotoHandle;
+use nakamoto_common::bitcoin::consensus::encode::deserialize as nk_deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, error, info, warn};
 
@@ -43,9 +43,16 @@ pub trait TransactionBroadcaster: Send + Sync {
     fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String>;
 }
 
-impl<W> TransactionBroadcaster for NakamotoHandle<W> {
+impl<T> TransactionBroadcaster for T
+where
+    T: nakamoto_client::handle::Handle,
+{
     fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String> {
-        self.submit_transaction(tx).map(|_| ()).map_err(|e| format!("{e:#}"))
+        let nk_tx = nk_deserialize(&serialize(&tx))
+            .map_err(|e| format!("transaction conversion failed: {e}"))?;
+        self.submit_transaction(nk_tx)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -515,7 +522,7 @@ mod tests {
         let source = FakeSource;
         let mut state = ClientState::new();
         let raw = r#"{"jsonrpc":"2.0","id":1,"method":"server.ping","params":[]}"#;
-        let resp = dispatch_request(raw, &mut state, &indexer, &source, &Metrics::new());
+        let resp = dispatch_request(raw, &mut state, &indexer, &source, &Metrics::new(), None);
         assert_eq!(resp["result"], Value::Null);
         assert_eq!(resp["id"], json!(1));
     }
