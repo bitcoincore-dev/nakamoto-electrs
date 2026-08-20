@@ -74,6 +74,17 @@ pub struct TxEntry {
     pub sequence: u32,
 }
 
+/// A mempool entry exposed to Electrum clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolEntry {
+    /// Transaction ID.
+    pub txid: Txid,
+    /// `0` if all inputs are confirmed, `-1` otherwise.
+    pub height: i32,
+    /// Estimated fee in sats.
+    pub fee: u64,
+}
+
 struct IndexState {
     history: HashMap<ScriptHash, Vec<TxEntry>>,
     by_height: HashMap<u32, Vec<BlockAction>>,
@@ -233,6 +244,46 @@ impl IndexState {
         }
 
         out
+    }
+
+    fn pending_mempool_for_script(&self, sh: &ScriptHash) -> Result<Vec<MempoolEntry>> {
+        use std::collections::HashSet;
+
+        let mut out = Vec::new();
+        for tx in self.pending_txs.values() {
+            if !self.pending_tx_touches_script(tx, sh) {
+                continue;
+            }
+            let txid = tx.compute_txid();
+            let mut input_value = 0u64;
+            let mut has_unconfirmed_input = false;
+            let mut seen_spends = HashSet::new();
+            for input in &tx.input {
+                let prevout = input.previous_output;
+                if prevout.is_null() || !seen_spends.insert(prevout) {
+                    continue;
+                }
+                if let Some(output) = self.store.load_output(&prevout)? {
+                    input_value = input_value.saturating_add(output.value);
+                } else if let Some(output) = self.pending_outputs.get(&prevout) {
+                    input_value = input_value.saturating_add(output.value);
+                    has_unconfirmed_input = true;
+                } else {
+                    has_unconfirmed_input = true;
+                }
+            }
+            let output_value = tx
+                .output
+                .iter()
+                .fold(0u64, |acc, output| acc.saturating_add(output.value.to_sat()));
+            out.push(MempoolEntry {
+                txid,
+                height: if has_unconfirmed_input { -1 } else { 0 },
+                fee: input_value.saturating_sub(output_value),
+            });
+        }
+        out.sort_by_key(|entry| entry.txid.to_string());
+        Ok(out)
     }
 
     fn pending_affected_scripts_for_tx(&self, tx: &Transaction) -> Vec<ScriptHash> {
@@ -541,6 +592,10 @@ impl IndexState {
         self.store.list_unspent_for_script(sh)
     }
 
+    fn mempool(&self, sh: &ScriptHash) -> Result<Vec<MempoolEntry>> {
+        self.pending_mempool_for_script(sh)
+    }
+
     fn pending_unspent_for_script(&self, sh: &ScriptHash) -> Vec<StoredUnspent> {
         self.pending_outputs
             .values()
@@ -750,6 +805,13 @@ impl Indexer {
         out.sort_by_key(|e| (e.height, e.txid.to_string(), e.vout));
         out.dedup_by_key(|e| (e.txid, e.vout));
         Ok(out)
+    }
+
+    pub fn get_mempool(&self, sh: &ScriptHash) -> Result<Vec<MempoolEntry>> {
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .mempool(sh)
     }
 }
 
