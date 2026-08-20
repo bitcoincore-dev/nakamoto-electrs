@@ -34,6 +34,7 @@ use std::sync::{
 use std::thread;
 
 use anyhow::{Context, Result};
+use crossbeam_channel::{Receiver as CbReceiver, Sender as CbSender, unbounded, select};
 use bitcoin::consensus::encode::{serialize, serialize_hex};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{Transaction, consensus::deserialize};
@@ -47,6 +48,27 @@ use crate::metrics::Metrics;
 
 pub trait TransactionBroadcaster: Send + Sync {
     fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String>;
+}
+
+#[derive(Clone, Default)]
+struct PendingChangeBroadcaster {
+    senders: Arc<Mutex<Vec<CbSender<Vec<ScriptHash>>>>>,
+}
+
+impl PendingChangeBroadcaster {
+    fn subscribe(&self) -> CbReceiver<Vec<ScriptHash>> {
+        let (tx, rx) = unbounded();
+        self.senders
+            .lock()
+            .expect("pending change lock poisoned")
+            .push(tx);
+        rx
+    }
+
+    fn broadcast(&self, affected: Vec<ScriptHash>) {
+        let mut guard = self.senders.lock().expect("pending change lock poisoned");
+        guard.retain(|tx| tx.send(affected.clone()).is_ok());
+    }
 }
 
 #[derive(Debug, Default)]
@@ -100,6 +122,7 @@ pub struct ElectrumServer {
     metrics: Metrics,
     broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
     fee_rate: Arc<FeeRateState>,
+    pending_changes: PendingChangeBroadcaster,
 }
 
 impl ElectrumServer {
@@ -119,6 +142,7 @@ impl ElectrumServer {
             metrics,
             broadcaster,
             fee_rate,
+            pending_changes: PendingChangeBroadcaster::default(),
         })
     }
 
@@ -158,6 +182,7 @@ impl ElectrumServer {
                     let metrics = Arc::clone(&metrics);
                     let broadcaster = broadcaster.clone();
                     let fee_rate = Arc::clone(&fee_rate);
+                    let pending_changes = self.pending_changes.clone();
 
                     metrics.inc_electrum_connections();
 
@@ -171,6 +196,7 @@ impl ElectrumServer {
                                 &metrics,
                                 broadcaster,
                                 &fee_rate,
+                                &pending_changes,
                             ) {
                                 debug!("client {peer} disconnected: {e:#}");
                             }
@@ -222,6 +248,7 @@ fn handle_client<S: BlockSource + Sync + 'static>(
     metrics: &Metrics,
     broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
     fee_rate: &Arc<FeeRateState>,
+    pending_changes: &PendingChangeBroadcaster,
 ) -> Result<()> {
     let peer = stream.peer_addr()?.to_string();
     let writer = Arc::new(Mutex::new(
@@ -230,6 +257,7 @@ fn handle_client<S: BlockSource + Sync + 'static>(
     let reader = BufReader::new(stream);
     let state = Arc::new(Mutex::new(ClientState::new()));
     let events = source.subscribe();
+    let pending_events = pending_changes.subscribe();
     let notifications = {
         let writer = Arc::clone(&writer);
         let indexer = indexer.clone();
@@ -238,61 +266,98 @@ fn handle_client<S: BlockSource + Sync + 'static>(
         thread::Builder::new()
             .name(format!("electrum-notify-{peer}"))
             .spawn(move || {
-                for event in &events {
-                    if matches!(
-                        event,
-                        crate::block_source::BlockEvent::Connected { .. }
-                            | crate::block_source::BlockEvent::Disconnected { .. }
-                    ) {
-                        let mut changed = Vec::new();
-                        {
-                            let mut state = state.lock().expect("electrum state poisoned");
-                            let subs = state.subscribed_scripthashes.clone();
-                            for sh in subs {
-                                let status = compute_status_hash(&indexer.get_history(&sh));
-                                let entry = state.status_by_scripthash.entry(sh).or_insert(None);
-                                if *entry != status {
-                                    *entry = status.clone();
-                                    changed.push((sh, status));
+                loop {
+                    select! {
+                        recv(events) -> msg => {
+                            let Ok(event) = msg else { break };
+                            if matches!(
+                                event,
+                                crate::block_source::BlockEvent::Connected { .. }
+                                    | crate::block_source::BlockEvent::Disconnected { .. }
+                            ) {
+                                let mut changed = Vec::new();
+                                {
+                                    let mut state = state.lock().expect("electrum state poisoned");
+                                    let subs = state.subscribed_scripthashes.clone();
+                                    for sh in subs {
+                                        let status = compute_status_hash(&indexer.get_history(&sh));
+                                        let entry = state.status_by_scripthash.entry(sh).or_insert(None);
+                                        if *entry != status {
+                                            *entry = status.clone();
+                                            changed.push((sh, status));
+                                        }
+                                    }
+                                }
+                                let current_headers = current_header_status(&indexer, source.as_ref())
+                                    .ok()
+                                    .flatten();
+                                let mut send_header = false;
+                                {
+                                    let mut state = state.lock().expect("electrum state poisoned");
+                                    if state.header_subscription != current_headers {
+                                        state.header_subscription = current_headers.clone();
+                                        send_header = true;
+                                    }
+                                }
+                                if send_header {
+                                    let response = match current_headers {
+                                        Some((height, hex)) => json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "blockchain.headers.subscribe",
+                                            "params": [{"height": height, "hex": hex}],
+                                        }),
+                                        None => json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "blockchain.headers.subscribe",
+                                            "params": [{"height": 0, "hex": ""}],
+                                        }),
+                                    };
+                                    if write_json(&writer, &response).is_err() {
+                                        break;
+                                    }
+                                }
+                                for (sh, status) in changed {
+                                    let response = json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "blockchain.scripthash.subscribe",
+                                        "params": [sh.to_hex(), status],
+                                    });
+                                    if write_json(&writer, &response).is_err() {
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        let current_headers = current_header_status(&indexer, source.as_ref())
-                            .ok()
-                            .flatten();
-                        let mut send_header = false;
-                        {
-                            let mut state = state.lock().expect("electrum state poisoned");
-                            if state.header_subscription != current_headers {
-                                state.header_subscription = current_headers.clone();
-                                send_header = true;
+                        },
+                        recv(pending_events) -> msg => {
+                            let Ok(affected) = msg else { break };
+                            if affected.is_empty() {
+                                continue;
                             }
-                        }
-                        if send_header {
-                            let response = match current_headers {
-                                Some((height, hex)) => json!({
-                                    "jsonrpc": "2.0",
-                                    "method": "blockchain.headers.subscribe",
-                                    "params": [{"height": height, "hex": hex}],
-                                }),
-                                None => json!({
-                                    "jsonrpc": "2.0",
-                                    "method": "blockchain.headers.subscribe",
-                                    "params": [{"height": 0, "hex": ""}],
-                                }),
-                            };
-                            if write_json(&writer, &response).is_err() {
-                                break;
+                            let mut changed = Vec::new();
+                            {
+                                let mut state = state.lock().expect("electrum state poisoned");
+                                let subs = state.subscribed_scripthashes.clone();
+                                for sh in subs {
+                                    if !affected.contains(&sh) {
+                                        continue;
+                                    }
+                                    let status = compute_status_hash(&indexer.get_history(&sh));
+                                    let entry = state.status_by_scripthash.entry(sh).or_insert(None);
+                                    if *entry != status {
+                                        *entry = status.clone();
+                                        changed.push((sh, status));
+                                    }
+                                }
                             }
-                        }
-                        for (sh, status) in changed {
-                            let response = json!({
-                                "jsonrpc": "2.0",
-                                "method": "blockchain.scripthash.subscribe",
-                                "params": [sh.to_hex(), status],
-                            });
-                            if write_json(&writer, &response).is_err() {
-                                break;
+                            for (sh, status) in changed {
+                                let response = json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "blockchain.scripthash.subscribe",
+                                    "params": [sh.to_hex(), status],
+                                });
+                                if write_json(&writer, &response).is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -319,6 +384,7 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                 metrics,
                 broadcaster.as_ref(),
                 fee_rate,
+                pending_changes,
             )
         };
         debug!("→ {peer}: {}", serde_json::to_string(&response)?.trim_end());
@@ -340,6 +406,7 @@ fn dispatch_request<S: BlockSource>(
     metrics: &Metrics,
     broadcaster: Option<&Arc<dyn TransactionBroadcaster>>,
     fee_rate: &Arc<FeeRateState>,
+    pending_changes: &PendingChangeBroadcaster,
 ) -> Value {
     let req: Value = match serde_json::from_str(raw) {
         Ok(v) => v,
@@ -371,7 +438,7 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.scripthash.subscribe" => handle_scripthash_subscribe(&params, state, indexer),
         "blockchain.transaction.get" => handle_transaction_get(&params, indexer),
         "blockchain.transaction.broadcast" => {
-            handle_transaction_broadcast(&params, metrics, broadcaster, indexer)
+            handle_transaction_broadcast(&params, metrics, broadcaster, indexer, pending_changes)
         }
         "blockchain.estimatefee" => handle_estimatefee(&params, fee_rate),
         "blockchain.block.header" => handle_block_header(&params, source),
@@ -508,6 +575,7 @@ fn handle_transaction_broadcast(
     metrics: &Metrics,
     broadcaster: Option<&Arc<dyn TransactionBroadcaster>>,
     indexer: &Indexer,
+    pending_changes: &PendingChangeBroadcaster,
 ) -> std::result::Result<Value, String> {
     let raw_hex = params
         .get(0)
@@ -524,9 +592,10 @@ fn handle_transaction_broadcast(
             broadcaster
                 .broadcast_transaction(tx.clone())
                 .map_err(|e| format!("broadcast failed: {e}"))?;
-            indexer
+            let affected = indexer
                 .track_pending_transaction(&tx)
                 .map_err(|e| format!("failed to cache broadcast transaction: {e:#}"))?;
+            pending_changes.broadcast(affected);
             Ok(Value::String(txid.to_string()))
         }
         None => Err("transaction broadcast is only available in bridge mode".into()),
@@ -718,6 +787,7 @@ mod tests {
         let source = FakeSource;
         let mut state = ClientState::new();
         let fee_rate = Arc::new(FeeRateState::new());
+        let pending_changes = PendingChangeBroadcaster::default();
         let raw = r#"{"jsonrpc":"2.0","id":1,"method":"server.ping","params":[]}"#;
         let resp = dispatch_request(
             raw,
@@ -727,6 +797,7 @@ mod tests {
             &Metrics::new(),
             None,
             &fee_rate,
+            &pending_changes,
         );
         assert_eq!(resp["result"], Value::Null);
         assert_eq!(resp["id"], json!(1));
@@ -782,8 +853,15 @@ mod tests {
         let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(mock.clone());
         let dir = tempfile::tempdir().expect("temp").keep();
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let pending_changes = PendingChangeBroadcaster::default();
         let resp =
-            handle_transaction_broadcast(&params, &Metrics::new(), Some(&broadcaster), &indexer)
+            handle_transaction_broadcast(
+                &params,
+                &Metrics::new(),
+                Some(&broadcaster),
+                &indexer,
+                &pending_changes,
+            )
                 .expect("broadcast");
         assert_eq!(resp, Value::String(txid));
         assert_eq!(*mock.seen.lock().unwrap(), Some(tx.compute_txid()));

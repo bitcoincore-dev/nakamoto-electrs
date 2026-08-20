@@ -227,6 +227,25 @@ impl IndexState {
         out
     }
 
+    fn pending_affected_scripts_for_tx(&self, tx: &Transaction) -> Vec<ScriptHash> {
+        use std::collections::HashSet;
+
+        let mut touched = HashSet::new();
+        for input in &tx.input {
+            let prevout = input.previous_output;
+            if prevout.is_null() {
+                continue;
+            }
+            if let Some(script_hash) = self.script_hash_for_outpoint(&prevout).ok().flatten() {
+                touched.insert(script_hash);
+            }
+        }
+        for output in &tx.output {
+            touched.insert(ScriptHash::from_script(&output.script_pubkey));
+        }
+        touched.into_iter().collect()
+    }
+
     fn pending_tx_touches_script(&self, tx: &Transaction, sh: &ScriptHash) -> bool {
         for input in &tx.input {
             let prevout = input.previous_output;
@@ -657,11 +676,16 @@ impl Indexer {
             .store_transaction(tx)
     }
 
-    pub fn track_pending_transaction(&self, tx: &Transaction) -> Result<()> {
+    pub fn track_pending_transaction(&self, tx: &Transaction) -> Result<Vec<ScriptHash>> {
         self.state
             .write()
             .expect("index write lock poisoned")
-            .track_pending_transaction_internal(tx)
+            .track_pending_transaction_internal(tx)?;
+        Ok(self
+            .state
+            .read()
+            .expect("index read lock poisoned")
+            .pending_affected_scripts_for_tx(tx))
     }
 
     pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
