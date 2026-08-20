@@ -122,6 +122,18 @@ fn electrum_call(addr: SocketAddr, request: &str) -> serde_json::Value {
     serde_json::from_str(line.trim()).expect("invalid JSON response")
 }
 
+fn bitcoin_cli_base_args(datadir: Option<&str>, rpc_user: &str, rpc_pass: &str, port: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(datadir) = datadir {
+        args.push(format!("-datadir={datadir}"));
+    }
+    args.push("-regtest".to_string());
+    args.push(format!("-rpcuser={rpc_user}"));
+    args.push(format!("-rpcpassword={rpc_pass}"));
+    args.push(format!("-rpcport={port}"));
+    args
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -171,15 +183,16 @@ fn e2e_scripthash_history_after_payment() {
     // Verify that bitcoind is reachable before proceeding.
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
 
     let status = std::process::Command::new("bitcoin-cli")
-        .args([
-            "-regtest",
-            &format!("-rpcuser={rpc_user}"),
-            &format!("-rpcpassword={rpc_pass}"),
-            "-rpcport=18443",
-            "getblockchaininfo",
-        ])
+        .args(bitcoin_cli_base_args(
+            datadir.as_deref(),
+            &rpc_user,
+            &rpc_pass,
+            "18443",
+        ))
+        .arg("getblockchaininfo")
         .status();
 
     // If bitcoin-cli is not available or bitcoind is not running, skip.
@@ -231,17 +244,23 @@ fn e2e_scripthash_history_after_payment() {
 fn e2e_rc_node_reachable_and_on_same_chain() {
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let stable_datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
+    let rc_datadir = std::env::var("BITCOIND_RC_DATADIR").ok();
 
     // ── helper: call bitcoin-cli and return stdout, or None if unavailable ──
     let rpc_call = |port: &str, method: &str| -> Option<String> {
         let out = std::process::Command::new("bitcoin-cli")
-            .args([
-                "-regtest",
-                &format!("-rpcuser={rpc_user}"),
-                &format!("-rpcpassword={rpc_pass}"),
-                &format!("-rpcport={port}"),
-                method,
-            ])
+            .args(bitcoin_cli_base_args(
+                if port == "18443" {
+                    stable_datadir.as_deref()
+                } else {
+                    rc_datadir.as_deref()
+                },
+                &rpc_user,
+                &rpc_pass,
+                port,
+            ))
+            .arg(method)
             .output()
             .ok()?;
         if out.status.success() {
@@ -309,15 +328,21 @@ fn e2e_rc_node_reachable_and_on_same_chain() {
 fn e2e_rc_node_syncs_block_from_stable() {
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let stable_datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
+    let rc_datadir = std::env::var("BITCOIND_RC_DATADIR").ok();
 
     let rpc_call = |port: &str, args: &[&str]| -> Option<String> {
         let mut cmd = std::process::Command::new("bitcoin-cli");
-        cmd.args([
-            "-regtest",
-            &format!("-rpcuser={rpc_user}"),
-            &format!("-rpcpassword={rpc_pass}"),
-            &format!("-rpcport={port}"),
-        ]);
+        cmd.args(bitcoin_cli_base_args(
+            if port == "18443" {
+                stable_datadir.as_deref()
+            } else {
+                rc_datadir.as_deref()
+            },
+            &rpc_user,
+            &rpc_pass,
+            port,
+        ));
         cmd.args(args);
         let out = cmd.output().ok()?;
         if out.status.success() {

@@ -362,6 +362,10 @@ impl IndexState {
         self.store.load_tx(txid)
     }
 
+    fn store_transaction(&self, tx: &Transaction) -> Result<()> {
+        self.store.store_tx(tx)
+    }
+
     fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.store.balance_for_script(sh)
     }
@@ -507,6 +511,13 @@ impl Indexer {
             .read()
             .expect("index read lock poisoned")
             .get_transaction(txid)
+    }
+
+    pub fn store_transaction(&self, tx: &Transaction) -> Result<()> {
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .store_transaction(tx)
     }
 
     pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {

@@ -213,6 +213,9 @@ jobs:
           bitcoind-rc -regtest -datadir="$HOME/.bitcoin-rc"
           echo "RC bitcoind started."
 
+          echo "BITCOIND_STABLE_DATADIR=$HOME/.bitcoin-stable" >> "$GITHUB_ENV"
+          echo "BITCOIND_RC_DATADIR=$HOME/.bitcoin-rc" >> "$GITHUB_ENV"
+
           # ── Wait for both RPC endpoints ───────────────────────────────────────
           for PORT in 18443 18445; do
             for i in $(seq 1 30); do

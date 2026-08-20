@@ -371,7 +371,7 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.scripthash.subscribe" => handle_scripthash_subscribe(&params, state, indexer),
         "blockchain.transaction.get" => handle_transaction_get(&params, indexer),
         "blockchain.transaction.broadcast" => {
-            handle_transaction_broadcast(&params, metrics, broadcaster)
+            handle_transaction_broadcast(&params, metrics, broadcaster, indexer)
         }
         "blockchain.estimatefee" => handle_estimatefee(&params, fee_rate),
         "blockchain.block.header" => handle_block_header(&params, source),
@@ -504,6 +504,7 @@ fn handle_transaction_broadcast(
     params: &Value,
     metrics: &Metrics,
     broadcaster: Option<&Arc<dyn TransactionBroadcaster>>,
+    indexer: &Indexer,
 ) -> std::result::Result<Value, String> {
     let raw_hex = params
         .get(0)
@@ -518,8 +519,11 @@ fn handle_transaction_broadcast(
     match broadcaster {
         Some(broadcaster) => {
             broadcaster
-                .broadcast_transaction(tx)
+                .broadcast_transaction(tx.clone())
                 .map_err(|e| format!("broadcast failed: {e}"))?;
+            indexer
+                .store_transaction(&tx)
+                .map_err(|e| format!("failed to cache broadcast transaction: {e:#}"))?;
             Ok(Value::String(txid.to_string()))
         }
         None => Err("transaction broadcast is only available in bridge mode".into()),
@@ -773,10 +777,18 @@ mod tests {
         let params = json!([hex::encode(bitcoin::consensus::encode::serialize(&tx))]);
         let mock = MockBroadcaster::default();
         let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(mock.clone());
-        let resp = handle_transaction_broadcast(&params, &Metrics::new(), Some(&broadcaster))
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let resp = handle_transaction_broadcast(
+            &params,
+            &Metrics::new(),
+            Some(&broadcaster),
+            &indexer,
+        )
             .expect("broadcast");
         assert_eq!(resp, Value::String(txid));
         assert_eq!(*mock.seen.lock().unwrap(), Some(tx.compute_txid()));
+        assert_eq!(indexer.get_transaction(&tx.compute_txid()).unwrap(), Some(tx));
     }
 
     #[test]
