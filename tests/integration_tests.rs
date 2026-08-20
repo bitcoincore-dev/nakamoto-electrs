@@ -843,6 +843,163 @@ fn electrum_transaction_broadcast_notifies_subscribed_scripthash() {
 }
 
 #[test]
+fn electrum_scripthash_subscribe_updates_on_mempool_chain_changes() {
+    #[derive(Clone, Default)]
+    struct MockBroadcaster;
+
+    impl TransactionBroadcaster for MockBroadcaster {
+        fn broadcast_transaction(&self, _tx: bitcoin::Transaction) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        Some(Arc::new(MockBroadcaster)),
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let script_a = p2pkh_script();
+    let script_b = mock::op_return_script(0x54);
+    let sh_a = sh_of(&script_a);
+
+    let mut sub_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    sub_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut sub_reader = BufReader::new(sub_stream.try_clone().unwrap());
+    write!(
+        sub_stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.subscribe","params":["{}"]}}"#,
+        sh_a.to_hex()
+    )
+    .unwrap();
+    sub_stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    sub_reader.read_line(&mut line).unwrap();
+    let initial: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(initial["result"].is_null());
+
+    let first = mock::make_tx(vec![script_a.clone()]);
+    let first_raw = hex::encode(bitcoin::consensus::encode::serialize(&first));
+    let first_txid = first.compute_txid();
+    let mut tx_stream1 = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    tx_stream1
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut tx_reader1 = BufReader::new(tx_stream1.try_clone().unwrap());
+    write!(
+        tx_stream1,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.transaction.broadcast","params":["{}"]}}"#,
+        first_raw
+    )
+    .unwrap();
+    tx_stream1.write_all(b"\n").unwrap();
+    line.clear();
+    while line.is_empty() {
+        match sub_reader.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read first mempool notification: {err}"),
+        }
+    }
+    let first_note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(first_note["method"], "blockchain.scripthash.subscribe");
+    assert_eq!(first_note["params"][0], serde_json::json!(sh_a.to_hex()));
+    let first_status = first_note["params"][1].as_str().expect("status string").to_owned();
+
+    line.clear();
+    while line.is_empty() {
+        match tx_reader1.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read first broadcast response: {err}"),
+        }
+    }
+    let first_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(first_resp["result"], serde_json::json!(first_txid.to_string()));
+
+    let second = mock::make_spend_tx(
+        bitcoin::OutPoint::new(first_txid, 0),
+        vec![(900, script_b.clone())],
+    );
+    let second_raw = hex::encode(bitcoin::consensus::encode::serialize(&second));
+    let mut tx_stream2 = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    tx_stream2
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut tx_reader2 = BufReader::new(tx_stream2.try_clone().unwrap());
+    write!(
+        tx_stream2,
+        r#"{{"jsonrpc":"2.0","id":3,"method":"blockchain.transaction.broadcast","params":["{}"]}}"#,
+        second_raw
+    )
+    .unwrap();
+    tx_stream2.write_all(b"\n").unwrap();
+
+    line.clear();
+    while line.is_empty() {
+        match sub_reader.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read second mempool notification: {err}"),
+        }
+    }
+    let second_note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(second_note["method"], "blockchain.scripthash.subscribe");
+    assert_eq!(second_note["params"][0], serde_json::json!(sh_a.to_hex()));
+    let second_status = second_note["params"][1].as_str().expect("status string");
+    assert_ne!(first_status, second_status);
+
+    line.clear();
+    while line.is_empty() {
+        match tx_reader2.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read second broadcast response: {err}"),
+        }
+    }
+    let second_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(
+        second_resp["result"],
+        serde_json::json!(second.compute_txid().to_string())
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+#[test]
 fn electrum_scripthash_get_mempool_returns_pending_transaction() {
     #[derive(Clone, Default)]
     struct MockBroadcaster;
