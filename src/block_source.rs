@@ -114,7 +114,7 @@ mod tests {
         let block = Block {
             header,
             txdata: vec![Transaction {
-                version: 1i32,
+                version: bitcoin::transaction::Version::non_standard(1),
                 lock_time: bitcoin::absolute::LockTime::ZERO,
                 input: vec![],
                 output: vec![],

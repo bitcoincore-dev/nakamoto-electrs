@@ -339,8 +339,8 @@ fn e2e_rc_node_syncs_block_from_stable() {
 
     // Create a wallet (ignore error if it already exists) and get an address.
     rpc_call("18443", &["createwallet", "testwallet"]);
-    let addr =
-        rpc_call("18443", &["getnewaddress"]).expect("could not get new address from stable node");
+    let addr = rpc_call("18443", &["-rpcwallet=testwallet", "getnewaddress"])
+        .expect("could not get new address from stable node");
 
     // Mine one block to that address on the stable node.
     let mined_json = rpc_call("18443", &["generatetoaddress", "1", addr.trim()])
