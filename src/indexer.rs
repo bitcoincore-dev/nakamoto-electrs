@@ -112,7 +112,7 @@ impl IndexState {
     /// Index all outputs of every transaction in `block`.
     fn apply_block(&mut self, block: &Block, height: u32) {
         for tx in &block.txdata {
-            let txid = tx.txid();
+            let txid = tx.compute_txid();
             for output in &tx.output {
                 let sh = ScriptHash::from_script(&output.script_pubkey);
                 let entry = TxEntry { txid, height };
@@ -120,7 +120,7 @@ impl IndexState {
                 self.by_height.entry(height).or_default().push((sh, txid));
             }
             // Also index spending inputs (skip coinbase).
-            if !tx.is_coin_base() {
+            if !tx.is_coinbase() {
                 for input in &tx.input {
                     // We don't have the scriptPubKey of the spent output here,
                     // so we can't compute the script hash of the spent address

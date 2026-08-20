@@ -10,7 +10,7 @@ electrs-bin = []
 
 [dependencies]
 anyhow = "1.0"
-bitcoin = "0.30"
+bitcoin = "0.32.102"
 crossbeam-channel = "0.5"
 electrs = { version = "0.10.10", default-features = false }
 hex = "0.4"
