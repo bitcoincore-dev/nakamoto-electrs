@@ -401,8 +401,7 @@ fn parse_scripthash(params: &Value) -> std::result::Result<ScriptHash, String> {
         let byte_str = hex_str
             .get(i * 2..i * 2 + 2)
             .ok_or("script_hash too short")?;
-        *byte =
-            u8::from_str_radix(byte_str, 16).map_err(|e| format!("invalid hex byte: {e}"))?;
+        *byte = u8::from_str_radix(byte_str, 16).map_err(|e| format!("invalid hex byte: {e}"))?;
     }
     Ok(ScriptHash::from_raw_bytes(bytes))
 }

@@ -81,31 +81,21 @@ jobs:
       # ---------------------------------------------------------------------------
       # Configure and start bitcoind in regtest mode
       # ---------------------------------------------------------------------------
-      - name: Configure bitcoind
+      - name: Configure and start bitcoind (regtest)
         run: |
           mkdir -p "$HOME/.bitcoin"
-          cat > "$HOME/.bitcoin/bitcoin.conf" <<EOF
-          regtest=1
-          server=1
-          daemon=1
-          rpcuser=${{ env.BITCOIND_RPC_USER }}
-          rpcpassword=${{ env.BITCOIND_RPC_PASS }}
-          rpcport=18443
-          rpcbind=127.0.0.1
-          fallbackfee=0.0001
-          txindex=1
-          EOF
+          cat > "$HOME/.bitcoin/bitcoin.conf" <<'EOF'
+[regtest]
+server=1
+daemon=1
+txindex=1
+fallbackfee=0.0001
+EOF
 
-      - name: Start bitcoind (regtest)
-        run: |
           bitcoind -regtest \
             -rpcuser="${BITCOIND_RPC_USER}" \
             -rpcpassword="${BITCOIND_RPC_PASS}" \
-            -rpcport=18443 \
-            -server \
-            -txindex \
-            -fallbackfee=0.0001 \
-            -daemon
+            -rpcport=18443
 
           # Wait until the RPC is ready
           for i in $(seq 1 30); do
