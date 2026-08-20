@@ -14,6 +14,7 @@ pub struct PersistentIndex {
     outputs: Tree,
     txs: Tree,
     utxos: Tree,
+    journal: Tree,
     meta: Tree,
 }
 
@@ -42,6 +43,23 @@ pub struct StoredOutput {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalActionKind {
+    Tx = 0,
+    History = 1,
+    Output = 2,
+    Spend = 3,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredJournalAction {
+    pub journal_key: Vec<u8>,
+    pub height: u32,
+    pub sequence: u32,
+    pub kind: JournalActionKind,
+    pub payload: Vec<u8>,
+}
+
 impl PersistentIndex {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let db: Db = sled::open(path).context("failed to open persistent index db")?;
@@ -49,12 +67,14 @@ impl PersistentIndex {
         let outputs = db.open_tree("outputs")?;
         let txs = db.open_tree("txs")?;
         let utxos = db.open_tree("utxos")?;
+        let journal = db.open_tree("journal")?;
         let meta = db.open_tree("meta")?;
         Ok(Self {
             history,
             outputs,
             txs,
             utxos,
+            journal,
             meta,
         })
     }
@@ -132,6 +152,35 @@ impl PersistentIndex {
         Ok(())
     }
 
+    pub fn store_journal_action(
+        &self,
+        height: u32,
+        sequence: u32,
+        kind: JournalActionKind,
+        payload: &[u8],
+    ) -> Result<Vec<u8>> {
+        let key = journal_key(height, sequence);
+        let mut value = Vec::with_capacity(1 + payload.len());
+        value.push(kind as u8);
+        value.extend_from_slice(payload);
+        self.journal.insert(&key, value)?;
+        Ok(key)
+    }
+
+    pub fn delete_journal_key(&self, key: &[u8]) -> Result<()> {
+        self.journal.remove(key)?;
+        Ok(())
+    }
+
+    pub fn load_journal_actions(&self) -> Result<Vec<StoredJournalAction>> {
+        let mut out = Vec::new();
+        for item in self.journal.iter() {
+            let (key, value) = item?;
+            out.push(parse_journal_action(&key, &value)?);
+        }
+        Ok(out)
+    }
+
     pub fn balance_for_script(&self, script_hash: &ScriptHash) -> Result<u64> {
         let mut total = 0u64;
         for item in self.utxos.scan_prefix(script_hash.as_bytes()) {
@@ -203,6 +252,13 @@ fn utxo_key(script_hash: ScriptHash, txid: Txid, vout: u32) -> Vec<u8> {
     key.extend_from_slice(script_hash.as_bytes());
     key.extend_from_slice(txid.as_byte_array());
     key.extend_from_slice(&vout.to_be_bytes());
+    key
+}
+
+fn journal_key(height: u32, sequence: u32) -> Vec<u8> {
+    let mut key = Vec::with_capacity(8);
+    key.extend_from_slice(&height.to_be_bytes());
+    key.extend_from_slice(&sequence.to_be_bytes());
     key
 }
 
@@ -278,5 +334,36 @@ fn parse_history_key(key: &[u8]) -> Result<StoredHistoryEntry> {
         sequence: u32::from_be_bytes(sequence),
         kind,
         history_key: key.to_vec(),
+    })
+}
+
+fn parse_journal_action(key: &[u8], value: &[u8]) -> Result<StoredJournalAction> {
+    if key.len() != 8 {
+        anyhow::bail!("invalid journal key length: {}", key.len());
+    }
+    if value.is_empty() {
+        anyhow::bail!("invalid journal value length: 0");
+    }
+
+    let mut height = [0u8; 4];
+    height.copy_from_slice(&key[0..4]);
+
+    let mut sequence = [0u8; 4];
+    sequence.copy_from_slice(&key[4..8]);
+
+    let kind = match value[0] {
+        0 => JournalActionKind::Tx,
+        1 => JournalActionKind::History,
+        2 => JournalActionKind::Output,
+        3 => JournalActionKind::Spend,
+        other => anyhow::bail!("invalid journal action kind: {other}"),
+    };
+
+    Ok(StoredJournalAction {
+        journal_key: key.to_vec(),
+        height: u32::from_be_bytes(height),
+        sequence: u32::from_be_bytes(sequence),
+        kind,
+        payload: value[1..].to_vec(),
     })
 }
