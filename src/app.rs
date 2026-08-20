@@ -88,7 +88,14 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
                 let _ = thread_handle.join();
                 return Err(anyhow::anyhow!(err));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => break (handle, thread_handle),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if shutdown.load(Ordering::Relaxed) {
+                    let _ = handle.shutdown();
+                    let _ = thread_handle.join();
+                    return Ok(());
+                }
+                break (handle, thread_handle)
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = thread_handle.join();
                 return Err(anyhow::anyhow!("nakamoto client startup channel disconnected"));
@@ -254,7 +261,14 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
                 let _ = thread_handle.join();
                 return Err(anyhow::anyhow!(err));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => break (handle, thread_handle),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if shutdown.load(Ordering::Relaxed) {
+                    let _ = handle.shutdown();
+                    let _ = thread_handle.join();
+                    return Ok(());
+                }
+                break (handle, thread_handle)
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = thread_handle.join();
                 return Err(anyhow::anyhow!("nakamoto client startup channel disconnected"));
