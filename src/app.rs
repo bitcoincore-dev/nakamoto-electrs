@@ -58,6 +58,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     let cache_dir = nk_cfg.root.join(".nakamoto");
     let legacy_cache_dir = cfg.index_dir.join(".nakamoto");
     let shutdown = Arc::new(AtomicBool::new(false));
+    let startup_complete = Arc::new(AtomicBool::new(false));
     install_shutdown_handler(Arc::clone(&shutdown))?;
     let (handle, client_thread) = loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -67,18 +68,21 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
         let handle = client.handle();
         let (tx, rx) = mpsc::channel::<String>();
         let nk_cfg = nk_cfg.clone();
+        let startup_complete_for_thread = Arc::clone(&startup_complete);
         let thread_handle = thread::Builder::new()
             .name("nakamoto".into())
             .spawn(move || {
                 if let Err(e) = client.run(nk_cfg) {
                     let _ = tx.send(e.to_string());
-                    error!("nakamoto client exited: {e:#}");
+                    if startup_complete_for_thread.load(Ordering::Relaxed) {
+                        error!("nakamoto client exited: {e:#}");
+                    }
                 }
             })?;
 
         match rx.recv_timeout(CLIENT_STARTUP_WAIT) {
-            Ok(err) if err.contains("stored genesis header doesn't match network genesis") => {
-                error!(
+            Ok(err) if is_genesis_mismatch(&err) => {
+                warn!(
                     "nakamoto cache mismatch detected; clearing {:?} and retrying",
                     cache_dir
                 );
@@ -97,6 +101,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
                     let _ = thread_handle.join();
                     return Ok(());
                 }
+                startup_complete.store(true, Ordering::Release);
                 break (handle, thread_handle);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -232,6 +237,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
     let cache_dir = config.root.join(".nakamoto");
     let legacy_cache_dir = cfg.index_dir.join(".nakamoto");
     let shutdown = Arc::new(AtomicBool::new(false));
+    let startup_complete = Arc::new(AtomicBool::new(false));
     install_shutdown_handler(Arc::clone(&shutdown))?;
     let (handle, client_runner) = loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -241,18 +247,21 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
         let handle = client.handle();
         let (tx, rx) = mpsc::channel::<String>();
         let config = config.clone();
+        let startup_complete_for_thread = Arc::clone(&startup_complete);
         let thread_handle = thread::Builder::new()
             .name("nakamoto".into())
             .spawn(move || {
                 if let Err(e) = client.run(config) {
                     let _ = tx.send(e.to_string());
-                    error!(target: "nakamoto", "client exited: {e:#}");
+                    if startup_complete_for_thread.load(Ordering::Relaxed) {
+                        error!(target: "nakamoto", "client exited: {e:#}");
+                    }
                 }
             })?;
 
         match rx.recv_timeout(CLIENT_STARTUP_WAIT) {
-            Ok(err) if err.contains("stored genesis header doesn't match network genesis") => {
-                error!(
+            Ok(err) if is_genesis_mismatch(&err) => {
+                warn!(
                     target: "nakamoto",
                     "nakamoto cache mismatch detected; clearing {:?} and retrying",
                     cache_dir
@@ -272,6 +281,7 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
                     let _ = thread_handle.join();
                     return Ok(());
                 }
+                startup_complete.store(true, Ordering::Release);
                 break (handle, thread_handle);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -330,4 +340,8 @@ where
             let _ = handle.shutdown();
         })
         .expect("failed to spawn nakamoto shutdown watcher")
+}
+
+fn is_genesis_mismatch(err: &str) -> bool {
+    err.contains("stored genesis header doesn't match network genesis")
 }
