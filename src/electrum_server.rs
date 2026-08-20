@@ -1341,4 +1341,126 @@ mod tests {
         let resp = handle_headers_subscribe(&indexer, &FakeSource).expect("headers");
         assert_eq!(resp["height"], json!(0));
     }
+
+    #[test]
+    fn headers_subscribe_receives_update_after_connected_block() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+        use std::collections::BTreeMap;
+        use std::net::SocketAddr;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct LiveSource {
+            senders: Arc<Mutex<Vec<crossbeam_channel::Sender<BlockEvent>>>>,
+            headers: Arc<Mutex<BTreeMap<u32, bitcoin::blockdata::block::Header>>>,
+        }
+
+        impl LiveSource {
+            fn push_connected(&self, block: bitcoin::Block, height: u32) {
+                let mut headers = self.headers.lock().unwrap();
+                headers.insert(height, block.header);
+                let event = BlockEvent::Connected { block, height };
+                self.senders
+                    .lock()
+                    .unwrap()
+                    .retain(|tx| tx.send(event.clone()).is_ok());
+            }
+        }
+
+        impl BlockSource for LiveSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> {
+                let (tx, rx) = crossbeam_channel::unbounded();
+                self.senders.lock().unwrap().push(tx);
+                rx
+            }
+
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                let headers = self.headers.lock().unwrap();
+                let height = headers.keys().next_back().copied().unwrap_or(0);
+                let header = headers
+                    .get(&height)
+                    .copied()
+                    .unwrap_or_else(|| bitcoin::blockdata::block::Header {
+                        version: bitcoin::blockdata::block::Version::ONE,
+                        prev_blockhash: bitcoin::BlockHash::all_zeros(),
+                        merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+                        time: 0,
+                        bits: bitcoin::CompactTarget::from_consensus(0x1d00ffff),
+                        nonce: 0,
+                    });
+                Ok((height, header.block_hash()))
+            }
+
+            fn block_header(
+                &self,
+                height: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(self.headers.lock().unwrap().get(&height).copied())
+            }
+
+            fn block_by_hash(
+                &self,
+                _hash: &bitcoin::BlockHash,
+            ) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
+        }
+
+        fn start_server(source: Arc<LiveSource>) -> (SocketAddr, Arc<AtomicBool>) {
+            let metrics = Metrics::new();
+            let dir = tempfile::tempdir().expect("temp index dir").keep();
+            let indexer = Indexer::new(dir, metrics.clone()).expect("indexer");
+            let fee_rate = Arc::new(FeeRateState::new());
+            let pending_changes = PendingChangeBroadcaster::default();
+            let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let server = ElectrumServer::bind(addr, indexer, metrics, None, fee_rate, pending_changes)
+                .expect("bind");
+            let local_addr = server.local_addr();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let shutdown_thread = Arc::clone(&shutdown);
+            thread::spawn(move || {
+                let _ = server.run(source, shutdown_thread);
+            });
+            (local_addr, shutdown)
+        }
+
+        let source = Arc::new(LiveSource::default());
+        let (addr, shutdown) = start_server(Arc::clone(&source));
+
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .write_all(
+                br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.headers.subscribe","params":[]}"#
+                    .as_slice(),
+            )
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let initial: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(initial["result"]["height"], json!(0));
+
+        let block = bitcoin::Block {
+            header: bitcoin::blockdata::block::Header {
+                version: bitcoin::blockdata::block::Version::ONE,
+                prev_blockhash: bitcoin::BlockHash::all_zeros(),
+                merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+                time: 1,
+                bits: bitcoin::CompactTarget::from_consensus(0x1d00ffff),
+                nonce: 1,
+            },
+            txdata: vec![],
+        };
+        source.push_connected(block, 1);
+
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let notification: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(notification["method"], "blockchain.headers.subscribe");
+        assert_eq!(notification["params"][0]["height"], json!(1));
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
 }
