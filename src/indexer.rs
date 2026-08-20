@@ -529,6 +529,19 @@ impl IndexState {
     fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
         self.store.list_unspent_for_script(sh)
     }
+
+    fn pending_unspent_for_script(&self, sh: &ScriptHash) -> Vec<StoredUnspent> {
+        self.pending_outputs
+            .values()
+            .filter(|output| &output.script_hash == sh)
+            .map(|output| StoredUnspent {
+                txid: output.txid,
+                vout: output.vout,
+                value: output.value,
+                height: output.height,
+            })
+            .collect()
+    }
 }
 
 fn action_sequence(action: &BlockAction) -> u32 {
@@ -703,10 +716,18 @@ impl Indexer {
     }
 
     pub fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
-        self.state
+        let mut out = self
+            .state
             .read()
             .expect("index read lock poisoned")
-            .list_unspent(sh)
+            .list_unspent(sh)?;
+        out.extend(
+            self.state
+                .read()
+                .expect("index read lock poisoned")
+                .pending_unspent_for_script(sh),
+        );
+        Ok(out)
     }
 }
 
