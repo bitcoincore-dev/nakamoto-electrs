@@ -248,6 +248,8 @@ impl ElectrumServer {
 struct ClientState {
     /// Script hashes subscribed by this client.
     subscribed_scripthashes: Vec<ScriptHash>,
+    /// Whether this client subscribed to block headers.
+    headers_subscribed: bool,
     /// Last status sent to the client for each subscribed script hash.
     status_by_scripthash: HashMap<ScriptHash, Option<String>>,
     /// Last headers.subscribe payload sent to the client.
@@ -258,6 +260,7 @@ impl ClientState {
     fn new() -> Self {
         Self {
             subscribed_scripthashes: Vec::new(),
+            headers_subscribed: false,
             status_by_scripthash: HashMap::new(),
             header_subscription: None,
         }
@@ -323,7 +326,9 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                                 let mut send_header = false;
                                 {
                                     let mut state = state.lock().expect("electrum state poisoned");
-                                    if state.header_subscription != current_headers {
+                                    if state.headers_subscribed
+                                        && state.header_subscription != current_headers
+                                    {
                                         state.header_subscription = current_headers.clone();
                                         send_header = true;
                                     }
@@ -460,7 +465,7 @@ fn dispatch_request<S: BlockSource>(
         "server.version" => handle_server_version(&params),
         "server.ping" => Ok(Value::Null),
         "server.banner" => Ok(Value::String(BANNER.into())),
-        "blockchain.headers.subscribe" => handle_headers_subscribe(indexer, source),
+        "blockchain.headers.subscribe" => handle_headers_subscribe(state, indexer, source),
         "blockchain.scripthash.get_history" => handle_scripthash_get_history(&params, indexer),
         "blockchain.scripthash.get_balance" => handle_scripthash_get_balance(&params, indexer),
         "blockchain.scripthash.listunspent" => handle_scripthash_listunspent(&params, indexer),
@@ -499,9 +504,11 @@ fn handle_server_version(params: &Value) -> std::result::Result<Value, String> {
 }
 
 fn handle_headers_subscribe<S: BlockSource>(
+    state: &mut ClientState,
     indexer: &Indexer,
     source: &S,
 ) -> std::result::Result<Value, String> {
+    state.headers_subscribed = true;
     current_header_status(indexer, source)
         .map(|opt| match opt {
             Some((height, hex)) => json!({"height": height, "hex": hex}),
@@ -741,10 +748,7 @@ fn current_header_status<S: BlockSource>(
     }
 }
 
-fn wait_for_indexer_tip<S: BlockSource>(
-    indexer: &Indexer,
-    source_event: &crate::block_source::BlockEvent,
-) {
+fn wait_for_indexer_tip(indexer: &Indexer, source_event: &crate::block_source::BlockEvent) {
     use std::time::{Duration, Instant};
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1466,7 +1470,8 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp").keep();
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
-        let resp = handle_headers_subscribe(&indexer, &FakeSource).expect("headers");
+        let mut state = ClientState::new();
+        let resp = handle_headers_subscribe(&mut state, &indexer, &FakeSource).expect("headers");
         assert_eq!(resp["height"], json!(0));
     }
 
