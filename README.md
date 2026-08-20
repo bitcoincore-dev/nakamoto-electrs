@@ -24,8 +24,11 @@ Bitcoin P2P Network
          ▼
 ┌───────────────────┐
 │  ElectrumServer   │  TCP JSON-RPC (Electrum protocol v1.4)
-│                   │  Answers: get_history, get_balance, listunspent, subscribe, broadcast, …
-│                   │  Locally broadcast txs also update pending balance/history/subscribe state
+│                   │  Answers: get_history, get_balance, listunspent, subscribe,
+│                   │  get_mempool, transaction.get, transaction.broadcast,
+│                   │  block.header, block.headers, …
+│                   │  Connected/disconnected blocks and locally broadcast txs
+│                   │  update history, balance, UTXOs, and subscribe state
 └───────────────────┘
          │
          ▼
@@ -127,7 +130,7 @@ cargo test --test e2e_regtest -- --ignored
 | Module | Description |
 |---|---|
 | `block_source` | `BlockSource` trait — abstract block/header provider |
-| `nakamoto_source` | `NakamotoBlockSource` — bridges nakamoto Handle to `BlockSource` |
+| `nakamoto_source` | `NakamotoBlockSource` — bridges nakamoto Handle to `BlockSource` with block cache + point queries |
 | `config` | Unified `Config` struct + CLI arg parser |
 | `indexer` | Script-hash indexer driven by `BlockEvent` stream |
 | `electrum_server` | Electrum JSON-RPC TCP server |
@@ -135,9 +138,17 @@ cargo test --test e2e_regtest -- --ignored
 
 ## Known limitations
 
-* **Partial mempool balance** — locally broadcast transactions are tracked as
-  pending and notify subscribed clients, but full peer-observed mempool
+* **Partial mempool balance** — locally broadcast transactions and nakamoto tx
+  status changes are tracked as pending, but full peer-observed mempool
   modeling is still incomplete.
+* **Mempool view** — `blockchain.scripthash.get_mempool` exposes the pending
+  transactions currently known to the bridge, including an estimated fee and
+  whether the transaction spends any unconfirmed inputs.
+* **Mempool-aware subscriptions** — `scripthash.subscribe` status hashes now
+  include both confirmed history and known pending transactions.
+* **Electrum live updates** — `headers.subscribe`, `scripthash.subscribe`,
+  `transaction.broadcast`, and `transaction.get` are wired to the nakamoto-
+  backed indexer and block source, including rollback/reorg notifications.
 * **Persistent index** — history, raw transaction lookups, and confirmed UTXOs
   survive restarts via the embedded store.
 * **nakamoto is SPV** — nakamoto downloads compact block filters (BIP 157/158)

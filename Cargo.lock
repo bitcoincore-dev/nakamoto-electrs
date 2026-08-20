@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "nakamoto-electrs"
-version = "0.0.5"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "bitcoin 0.32.102",
@@ -1078,6 +1078,7 @@ dependencies = [
  "nakamoto-common",
  "nakamoto-net-poll",
  "nakamoto-node",
+ "nakamoto-p2p",
  "serde_json",
  "sled",
  "tempfile",
