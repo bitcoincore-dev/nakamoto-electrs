@@ -1,10 +1,12 @@
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bitcoin::consensus::encode::{deserialize, serialize};
 use bitcoin::hashes::Hash;
 use bitcoin::{OutPoint, Transaction, Txid};
-use sled::{Db, Tree};
+use sled::Tree;
 
 use crate::indexer::{ScriptHash, TxEntry};
 
@@ -70,21 +72,35 @@ pub struct StoredJournalAction {
 
 impl PersistentIndex {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let db: Db = sled::open(path).context("failed to open persistent index db")?;
-        let history = db.open_tree("history")?;
-        let outputs = db.open_tree("outputs")?;
-        let txs = db.open_tree("txs")?;
-        let utxos = db.open_tree("utxos")?;
-        let journal = db.open_tree("journal")?;
-        let meta = db.open_tree("meta")?;
-        Ok(Self {
-            history,
-            outputs,
-            txs,
-            utxos,
-            journal,
-            meta,
-        })
+        let mut last_err = None;
+        for attempt in 0..10 {
+            match sled::open(path.as_ref()) {
+                Ok(db) => {
+                    let history = db.open_tree("history")?;
+                    let outputs = db.open_tree("outputs")?;
+                    let txs = db.open_tree("txs")?;
+                    let utxos = db.open_tree("utxos")?;
+                    let journal = db.open_tree("journal")?;
+                    let meta = db.open_tree("meta")?;
+                    return Ok(Self {
+                        history,
+                        outputs,
+                        txs,
+                        utxos,
+                        journal,
+                        meta,
+                    });
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 9 {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                }
+            }
+        }
+        let err = last_err.expect("sled open failed without error");
+        Err(err).context("failed to open persistent index db")
     }
 
     pub fn set_tip_height(&self, height: u32) -> Result<()> {

@@ -555,14 +555,18 @@ fn indexer_tracks_unconfirmed_pending_balance_and_history() {
     assert_eq!(indexer.get_balance(&sh_a).unwrap(), 1000);
     assert_eq!(indexer.get_unconfirmed_balance_delta(&sh_a).unwrap(), -1000);
     assert_eq!(indexer.get_unconfirmed_balance_delta(&sh_b).unwrap(), 900);
-    assert!(indexer
-        .get_history(&sh_a)
-        .iter()
-        .any(|e| e.height == 0 && e.txid == pending.compute_txid()));
-    assert!(indexer
-        .get_history(&sh_b)
-        .iter()
-        .any(|e| e.height == 0 && e.txid == pending.compute_txid()));
+    assert!(
+        indexer
+            .get_history(&sh_a)
+            .iter()
+            .any(|e| e.height == 0 && e.txid == pending.compute_txid())
+    );
+    assert!(
+        indexer
+            .get_history(&sh_b)
+            .iter()
+            .any(|e| e.height == 0 && e.txid == pending.compute_txid())
+    );
 }
 
 #[test]

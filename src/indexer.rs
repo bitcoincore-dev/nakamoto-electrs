@@ -268,7 +268,10 @@ impl IndexState {
         if let Some(output) = self.pending_outputs.get(outpoint) {
             return Ok(Some(output.script_hash));
         }
-        Ok(self.store.load_output(outpoint)?.map(|output| output.script_hash))
+        Ok(self
+            .store
+            .load_output(outpoint)?
+            .map(|output| output.script_hash))
     }
 
     fn unconfirmed_balance_delta_for_script(&self, sh: &ScriptHash) -> Result<i64> {

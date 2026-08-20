@@ -34,10 +34,10 @@ use std::sync::{
 use std::thread;
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver as CbReceiver, Sender as CbSender, unbounded, select};
 use bitcoin::consensus::encode::{serialize, serialize_hex};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{Transaction, consensus::deserialize};
+use crossbeam_channel::{Receiver as CbReceiver, Sender as CbSender, select, unbounded};
 use nakamoto_common::bitcoin::consensus::encode::deserialize as nk_deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, error, info, warn};
@@ -854,15 +854,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp").keep();
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
         let pending_changes = PendingChangeBroadcaster::default();
-        let resp =
-            handle_transaction_broadcast(
-                &params,
-                &Metrics::new(),
-                Some(&broadcaster),
-                &indexer,
-                &pending_changes,
-            )
-                .expect("broadcast");
+        let resp = handle_transaction_broadcast(
+            &params,
+            &Metrics::new(),
+            Some(&broadcaster),
+            &indexer,
+            &pending_changes,
+        )
+        .expect("broadcast");
         assert_eq!(resp, Value::String(txid));
         assert_eq!(*mock.seen.lock().unwrap(), Some(tx.compute_txid()));
         assert_eq!(
@@ -929,9 +928,14 @@ mod tests {
                 script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51]),
             }],
         };
-        indexer.track_pending_transaction(&tx).expect("track pending");
-        let sh = parse_scripthash(&json!([ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(vec![0x51])).to_hex()]))
-            .expect("script hash");
+        indexer
+            .track_pending_transaction(&tx)
+            .expect("track pending");
+        let sh = parse_scripthash(&json!([ScriptHash::from_script(
+            &bitcoin::ScriptBuf::from_bytes(vec![0x51])
+        )
+        .to_hex()]))
+        .expect("script hash");
         let resp = handle_scripthash_get_balance(&json!([sh.to_hex()]), &indexer).expect("balance");
         assert_eq!(resp["confirmed"], json!(0));
         assert_eq!(resp["unconfirmed"], json!(900));
@@ -956,9 +960,12 @@ mod tests {
                 script_pubkey: script.clone(),
             }],
         };
-        indexer.track_pending_transaction(&tx).expect("track pending");
+        indexer
+            .track_pending_transaction(&tx)
+            .expect("track pending");
         let sh = ScriptHash::from_script(&script);
-        let resp = handle_scripthash_listunspent(&json!([sh.to_hex()]), &indexer).expect("listunspent");
+        let resp =
+            handle_scripthash_listunspent(&json!([sh.to_hex()]), &indexer).expect("listunspent");
         let arr = resp.as_array().expect("array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["height"], json!(0));
@@ -1024,7 +1031,12 @@ mod tests {
         assert_eq!(resp, Value::String(txid));
         assert_eq!(*mock.seen.lock().unwrap(), Some(tx.compute_txid()));
         let affected = rx.recv().expect("pending notification");
-        assert_eq!(affected, vec![ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(vec![0x51]))]);
+        assert_eq!(
+            affected,
+            vec![ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(
+                vec![0x51]
+            ))]
+        );
     }
 
     #[test]
