@@ -43,6 +43,14 @@ pub struct StoredOutput {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredUnspent {
+    pub txid: Txid,
+    pub vout: u32,
+    pub value: u64,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JournalActionKind {
     Tx = 0,
@@ -189,6 +197,29 @@ impl PersistentIndex {
             total = total.saturating_add(u64::from_be_bytes(amount));
         }
         Ok(total)
+    }
+
+    pub fn list_unspent_for_script(&self, script_hash: &ScriptHash) -> Result<Vec<StoredUnspent>> {
+        let mut out = Vec::new();
+        for item in self.utxos.scan_prefix(script_hash.as_bytes()) {
+            let (key, value) = item?;
+            let mut txid = [0u8; 32];
+            txid.copy_from_slice(&key[32..64]);
+            let mut vout = [0u8; 4];
+            vout.copy_from_slice(&key[64..68]);
+            let amount = <[u8; 8]>::try_from(value.as_ref()).context("invalid utxo value")?;
+            let outpoint = OutPoint::new(Txid::from_byte_array(txid), u32::from_be_bytes(vout));
+            let stored = self
+                .load_output(&outpoint)?
+                .ok_or_else(|| anyhow::anyhow!("missing output for unspent {}", outpoint))?;
+            out.push(StoredUnspent {
+                txid: outpoint.txid,
+                vout: outpoint.vout,
+                value: u64::from_be_bytes(amount),
+                height: stored.height,
+            });
+        }
+        Ok(out)
     }
 
     pub fn store_history_entry(

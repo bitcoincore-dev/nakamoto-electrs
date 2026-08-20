@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::block_source::{BlockEvent, BlockSource};
 use crate::metrics::Metrics;
-use crate::store::{JournalActionKind, PersistentIndex};
+use crate::store::{JournalActionKind, PersistentIndex, StoredUnspent};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -341,6 +341,10 @@ impl IndexState {
     fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.store.balance_for_script(sh)
     }
+
+    fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
+        self.store.list_unspent_for_script(sh)
+    }
 }
 
 fn action_sequence(action: &BlockAction) -> u32 {
@@ -472,6 +476,10 @@ impl Indexer {
 
     pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.state.read().expect("index read lock poisoned").get_balance(sh)
+    }
+
+    pub fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
+        self.state.read().expect("index read lock poisoned").list_unspent(sh)
     }
 }
 
@@ -632,6 +640,20 @@ mod tests {
         state.apply_block(&block, 1).expect("apply");
         let tx = state.get_transaction(&txid).expect("query tx");
         assert!(tx.is_some());
+    }
+
+    #[test]
+    fn list_unspent_returns_funded_output() {
+        let mut state = make_state();
+        let script = p2pkh_script();
+        let block = make_block(1, vec![script.clone()]);
+        state.apply_block(&block, 1).expect("apply");
+
+        let sh = ScriptHash::from_script(&Builder::from(script).into_script());
+        let unspent = state.list_unspent(&sh).expect("unspent");
+        assert_eq!(unspent.len(), 1);
+        assert_eq!(unspent[0].value, 1000);
+        assert_eq!(unspent[0].height, 1);
     }
 
     #[test]

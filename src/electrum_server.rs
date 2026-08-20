@@ -14,6 +14,7 @@
 //! | `blockchain.headers.subscribe` | Subscribe to new block headers |
 //! | `blockchain.scripthash.get_history` | Transaction history for a script hash |
 //! | `blockchain.scripthash.get_balance` | Balance for a script hash |
+//! | `blockchain.scripthash.listunspent` | List unspent outputs for a script hash |
 //! | `blockchain.scripthash.subscribe` | Subscribe to script-hash status changes |
 //! | `blockchain.transaction.get` | Fetch a raw transaction by txid |
 //! | `blockchain.transaction.broadcast` | Broadcast a raw transaction |
@@ -239,6 +240,7 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.headers.subscribe" => handle_headers_subscribe(indexer, source),
         "blockchain.scripthash.get_history" => handle_scripthash_get_history(&params, indexer),
         "blockchain.scripthash.get_balance" => handle_scripthash_get_balance(&params, indexer),
+        "blockchain.scripthash.listunspent" => handle_scripthash_listunspent(&params, indexer),
         "blockchain.scripthash.subscribe" => handle_scripthash_subscribe(&params, state, indexer),
         "blockchain.transaction.get" => handle_transaction_get(&params, indexer),
         "blockchain.transaction.broadcast" => {
@@ -321,6 +323,29 @@ fn handle_scripthash_get_balance(
         "confirmed": confirmed,
         "unconfirmed": 0
     }))
+}
+
+fn handle_scripthash_listunspent(
+    params: &Value,
+    indexer: &Indexer,
+) -> std::result::Result<Value, String> {
+    let sh = parse_scripthash(params)?;
+    let entries = indexer
+        .list_unspent(&sh)
+        .map_err(|e| format!("listunspent failed: {e:#}"))?;
+    Ok(Value::Array(
+        entries
+            .into_iter()
+            .map(|e| {
+                json!({
+                    "tx_hash": e.txid.to_string(),
+                    "tx_pos": e.vout,
+                    "height": e.height,
+                    "value": e.value,
+                })
+            })
+            .collect(),
+    ))
 }
 
 fn handle_scripthash_subscribe(
@@ -548,5 +573,14 @@ mod tests {
             compute_status_hash(&history).as_deref(),
             Some("12b132b4f9cac2ddb0a05030bf14ab07a46352fe787aa4f0e245fac197dd5b48")
         );
+    }
+
+    #[test]
+    fn listunspent_uses_expected_fields() {
+        let params = json!(["0".repeat(64)]);
+        assert!(handle_scripthash_listunspent(&params, &Indexer::new(
+            tempfile::tempdir().expect("temp").keep(),
+            Metrics::new()
+        ).expect("indexer")).is_ok());
     }
 }
