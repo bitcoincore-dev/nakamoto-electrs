@@ -135,8 +135,8 @@ cargo test --test e2e_regtest -- --ignored
 
 ## Known limitations
 
-* **Partial mempool balance** — locally broadcast transactions are tracked as
-  pending and notify subscribed clients, but full peer-observed mempool
+* **Partial mempool balance** — locally broadcast transactions and nakamoto tx
+  status changes are tracked as pending, but full peer-observed mempool
   modeling is still incomplete.
 * **Persistent index** — history, raw transaction lookups, and confirmed UTXOs
   survive restarts via the embedded store.

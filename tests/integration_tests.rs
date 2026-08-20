@@ -570,6 +570,33 @@ fn indexer_tracks_unconfirmed_pending_balance_and_history() {
 }
 
 #[test]
+fn indexer_restores_and_forgets_pending_transactions() {
+    let indexer = make_indexer(Metrics::new());
+
+    let script = mock::op_return_script(0x66);
+    let tx = mock::make_tx(vec![script.clone()]);
+    let txid = tx.compute_txid();
+    indexer.store_transaction(&tx).expect("store tx");
+
+    let restored = indexer
+        .restore_pending_transaction(&txid)
+        .expect("restore pending")
+        .expect("restored scripts");
+    let sh = sh_of(&script);
+    assert_eq!(restored, vec![sh]);
+    assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 1000);
+    assert_eq!(indexer.list_unspent(&sh).unwrap().len(), 1);
+
+    let forgotten = indexer
+        .forget_pending_transaction(&txid)
+        .expect("forget pending")
+        .expect("forgotten scripts");
+    assert_eq!(forgotten, vec![sh]);
+    assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 0);
+    assert!(indexer.list_unspent(&sh).unwrap().is_empty());
+}
+
+#[test]
 fn indexer_listunspent_is_stable_and_deduped() {
     let source = mock::MockBlockSource::new();
     let indexer = make_indexer(Metrics::new());
