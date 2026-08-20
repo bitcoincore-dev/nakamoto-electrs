@@ -298,6 +298,7 @@ fn handle_client<S: BlockSource + Sync + 'static>(
                                 crate::block_source::BlockEvent::Connected { .. }
                                     | crate::block_source::BlockEvent::Disconnected { .. }
                             ) {
+                                wait_for_indexer_tip(&indexer, &event);
                                 let current_headers = match &event {
                                     crate::block_source::BlockEvent::Connected { block, height } => {
                                         Some((*height, serialize_hex(&block.header)))
@@ -737,6 +738,28 @@ fn current_header_status<S: BlockSource>(
     match source.block_header(height)? {
         Some(header) => Ok(Some((height, serialize_hex(&header)))),
         None => Ok(None),
+    }
+}
+
+fn wait_for_indexer_tip<S: BlockSource>(
+    indexer: &Indexer,
+    source_event: &crate::block_source::BlockEvent,
+) {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let ready = match source_event {
+            crate::block_source::BlockEvent::Connected { height, .. } => indexer.tip_height() >= *height,
+            crate::block_source::BlockEvent::Disconnected { height, .. } => {
+                indexer.tip_height() < *height
+            }
+            crate::block_source::BlockEvent::Synced { .. } => true,
+        };
+        if ready || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
