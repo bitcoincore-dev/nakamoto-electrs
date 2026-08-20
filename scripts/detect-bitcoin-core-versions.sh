@@ -1,34 +1,80 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
-
-curl -fsSL \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/bitcoin/bitcoin/releases?per_page=30" \
-  -o "$tmp"
-
-python3 - "$tmp" <<'PY'
-import json
+python3 - <<'PY'
 import re
 import sys
+import urllib.request
+from html.parser import HTMLParser
 
-releases = json.load(open(sys.argv[1]))
-non_draft = [r for r in releases if not r.get("draft", False)]
-non_draft.sort(key=lambda r: r.get("published_at", ""), reverse=True)
-assert non_draft, "No Bitcoin Core releases found"
+BASE_URL = "https://bitcoincore.org/bin/"
 
-is_rc = lambda r: r.get("prerelease", False) or re.search(
-    r"rc\d+$", r.get("tag_name", ""), re.IGNORECASE
+
+class LinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "a":
+            return
+        for name, value in attrs:
+            if name == "href" and value:
+                self.hrefs.append(value)
+                break
+
+
+def fetch(url: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def parse_links(url: str) -> list[str]:
+    parser = LinkParser()
+    parser.feed(fetch(url))
+    return parser.hrefs
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+top_links = parse_links(BASE_URL)
+versions = sorted(
+    {
+        m.group(1)
+        for href in top_links
+        if (m := re.fullmatch(r"bitcoin-core-([0-9]+(?:\.[0-9]+)*)/", href))
+    },
+    key=version_key,
+    reverse=True,
 )
 
-stable = next((r for r in non_draft if not is_rc(r)), None)
-rc = next((r for r in non_draft if is_rc(r)), None)
+if not versions:
+    sys.exit("No Bitcoin Core versions found at /bin/")
 
-stable_ver = stable["tag_name"].lstrip("v") if stable else non_draft[0]["tag_name"].lstrip("v")
-rc_ver = rc["tag_name"].lstrip("v") if rc else stable_ver
+stable_version = versions[0]
+stable_base_url = f"https://bitcoincore.org/bin/bitcoin-core-{stable_version}"
 
-print(f"STABLE_VERSION={stable_ver}")
-print(f"RC_VERSION={rc_ver}")
+rc_version = stable_version
+rc_base_url = stable_base_url
+
+for version in versions:
+    links = parse_links(f"https://bitcoincore.org/bin/bitcoin-core-{version}/")
+    rc_dirs = [
+        int(m.group(1))
+        for href in links
+        if (m := re.fullmatch(r"test\.rc([0-9]+)/", href))
+    ]
+    if rc_dirs:
+        rc_num = max(rc_dirs)
+        rc_version = f"{version}rc{rc_num}"
+        rc_base_url = f"https://bitcoincore.org/bin/bitcoin-core-{version}/test.rc{rc_num}"
+        break
+
+print(f"STABLE_VERSION={stable_version}")
+print(f"STABLE_BASE_URL={stable_base_url}")
+print(f"RC_VERSION={rc_version}")
+print(f"RC_BASE_URL={rc_base_url}")
 PY
