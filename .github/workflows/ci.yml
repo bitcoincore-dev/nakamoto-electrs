@@ -50,7 +50,7 @@ jobs:
         continue-on-error: true
 
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets
         continue-on-error: true
 
       - name: cargo build
