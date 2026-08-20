@@ -4,8 +4,8 @@
 //! Values can be read by the main thread for logging or future export (e.g.
 //! Prometheus).
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Metrics
@@ -64,16 +64,12 @@ impl Metrics {
 
     /// Record a new Electrum TCP connection.
     pub fn inc_electrum_connections(&self) {
-        self.0
-            .electrum_connections
-            .fetch_add(1, Ordering::Relaxed);
+        self.0.electrum_connections.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record that an Electrum TCP connection closed.
     pub fn dec_electrum_connections(&self) {
-        self.0
-            .electrum_connections
-            .fetch_sub(1, Ordering::Relaxed);
+        self.0.electrum_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Current number of active Electrum connections.

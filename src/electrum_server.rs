@@ -56,11 +56,7 @@ pub struct ElectrumServer {
 
 impl ElectrumServer {
     /// Bind the server to the given address.
-    pub fn bind(
-        addr: std::net::SocketAddr,
-        indexer: Indexer,
-        metrics: Metrics,
-    ) -> Result<Self> {
+    pub fn bind(addr: std::net::SocketAddr, indexer: Indexer, metrics: Metrics) -> Result<Self> {
         let listener = TcpListener::bind(addr).context("failed to bind Electrum listener")?;
         info!("Electrum server listening on {addr}");
         Ok(Self {
@@ -94,9 +90,7 @@ impl ElectrumServer {
                     thread::Builder::new()
                         .name(format!("electrum-{peer}"))
                         .spawn(move || {
-                            if let Err(e) =
-                                handle_client(stream, &indexer, &source, &metrics)
-                            {
+                            if let Err(e) = handle_client(stream, &indexer, &source, &metrics) {
                                 debug!("client {peer} disconnected: {e:#}");
                             }
                             metrics.dec_electrum_connections();
@@ -194,19 +188,11 @@ fn dispatch_request<S: BlockSource>(
         "server.ping" => Ok(Value::Null),
         "server.banner" => Ok(Value::String(BANNER.into())),
         "blockchain.headers.subscribe" => handle_headers_subscribe(indexer, source),
-        "blockchain.scripthash.get_history" => {
-            handle_scripthash_get_history(&params, indexer)
-        }
-        "blockchain.scripthash.get_balance" => {
-            handle_scripthash_get_balance(&params, indexer)
-        }
-        "blockchain.scripthash.subscribe" => {
-            handle_scripthash_subscribe(&params, state, indexer)
-        }
+        "blockchain.scripthash.get_history" => handle_scripthash_get_history(&params, indexer),
+        "blockchain.scripthash.get_balance" => handle_scripthash_get_balance(&params, indexer),
+        "blockchain.scripthash.subscribe" => handle_scripthash_subscribe(&params, state, indexer),
         "blockchain.transaction.get" => handle_transaction_get(&params, source),
-        "blockchain.transaction.broadcast" => {
-            handle_transaction_broadcast(&params, metrics)
-        }
+        "blockchain.transaction.broadcast" => handle_transaction_broadcast(&params, metrics),
         "blockchain.estimatefee" => handle_estimatefee(&params),
         "blockchain.block.header" => handle_block_header(&params, source),
         "blockchain.block.headers" => handle_block_headers(&params, source),
@@ -232,10 +218,7 @@ fn dispatch_request<S: BlockSource>(
 
 fn handle_server_version(params: &Value) -> std::result::Result<Value, String> {
     // Params: [client_name, protocol_version]  (both optional in our impl)
-    let _client = params
-        .get(0)
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
+    let _client = params.get(0).and_then(Value::as_str).unwrap_or("unknown");
     Ok(json!([SERVER_VERSION, PROTOCOL_VERSION]))
 }
 
@@ -318,9 +301,7 @@ fn handle_transaction_get<S: BlockSource>(
         .get(0)
         .and_then(Value::as_str)
         .ok_or("missing txid parameter")?;
-    let txid: bitcoin::Txid = txid_str
-        .parse()
-        .map_err(|e| format!("invalid txid: {e}"))?;
+    let txid: bitcoin::Txid = txid_str.parse().map_err(|e| format!("invalid txid: {e}"))?;
 
     // We don't maintain a txid → block-hash lookup table yet; return an error
     // indicating the tx is not in the local cache.  A future improvement would
@@ -416,12 +397,12 @@ fn parse_scripthash(params: &Value) -> std::result::Result<ScriptHash, String> {
         ));
     }
     let mut bytes = [0u8; 32];
-    for i in 0..32 {
+    for (i, byte) in bytes.iter_mut().enumerate() {
         let byte_str = hex_str
             .get(i * 2..i * 2 + 2)
             .ok_or("script_hash too short")?;
-        bytes[i] = u8::from_str_radix(byte_str, 16)
-            .map_err(|e| format!("invalid hex byte: {e}"))?;
+        *byte =
+            u8::from_str_radix(byte_str, 16).map_err(|e| format!("invalid hex byte: {e}"))?;
     }
     Ok(ScriptHash::from_raw_bytes(bytes))
 }
@@ -475,7 +456,10 @@ mod tests {
                 use bitcoin::hashes::Hash;
                 Ok((0, bitcoin::BlockHash::all_zeros()))
             }
-            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+            fn block_header(
+                &self,
+                _h: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
                 Ok(None)
             }
             fn block_by_hash(

@@ -10,10 +10,7 @@ use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 
 use nakamoto_electrs::{
-    config::Config,
-    electrum_server::ElectrumServer,
-    indexer::Indexer,
-    metrics::Metrics,
+    config::Config, electrum_server::ElectrumServer, indexer::Indexer, metrics::Metrics,
     nakamoto_source::NakamotoBlockSource,
 };
 
@@ -29,18 +26,21 @@ fn main() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    info!("nakamoto-electrs starting (network={})", match cfg.network {
-        nakamoto_electrs::Network::Mainnet => "mainnet",
-        nakamoto_electrs::Network::Testnet => "testnet",
-        nakamoto_electrs::Network::Signet  => "signet",
-        nakamoto_electrs::Network::Regtest => "regtest",
-    });
+    info!(
+        "nakamoto-electrs starting (network={})",
+        match cfg.network {
+            nakamoto_electrs::Network::Mainnet => "mainnet",
+            nakamoto_electrs::Network::Testnet => "testnet",
+            nakamoto_electrs::Network::Signet => "signet",
+            nakamoto_electrs::Network::Regtest => "regtest",
+        }
+    );
 
     // ---- 3. Build nakamoto client config --------------------------------
     let nk_network = match cfg.network {
         nakamoto_electrs::Network::Mainnet => nakamoto_client::Network::Mainnet,
         nakamoto_electrs::Network::Testnet => nakamoto_client::Network::Testnet,
-        nakamoto_electrs::Network::Signet  => nakamoto_client::Network::Signet,
+        nakamoto_electrs::Network::Signet => nakamoto_client::Network::Signet,
         nakamoto_electrs::Network::Regtest => nakamoto_client::Network::Regtest,
     };
     let mut nk_cfg = nakamoto_client::Config::new(nk_network);
@@ -90,4 +90,3 @@ fn main() -> Result<()> {
     let _ = client_thread.join();
     Ok(())
 }
-

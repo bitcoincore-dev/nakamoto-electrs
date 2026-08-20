@@ -20,17 +20,11 @@ use bitcoin::{Block, BlockHash, blockdata::block::Header as BlockHeader};
 #[derive(Debug, Clone)]
 pub enum BlockEvent {
     /// A new block has been connected to the best chain.
-    Connected {
-        block: Block,
-        height: u32,
-    },
+    Connected { block: Block, height: u32 },
     /// A block has been disconnected during a chain reorganisation.
     ///
     /// The indexer should roll back any data it indexed for this block.
-    Disconnected {
-        hash: BlockHash,
-        height: u32,
-    },
+    Disconnected { hash: BlockHash, height: u32 },
     /// The block source has caught up with the current chain tip.
     ///
     /// Emitted once after initial sync completes, and again after each
