@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: ""
@@ -15,8 +19,12 @@ env:
 
 jobs:
   e2e-regtest:
-    name: E2E Regtest Tests
-    runs-on: ubuntu-latest
+    name: E2E Regtest Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -26,12 +34,13 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Cache Cargo registry & build artefacts
+      - name: Cache Cargo registry, bin & build artefacts
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
           key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
@@ -40,9 +49,40 @@ jobs:
 
       - name: Install RocksDB system library
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q librocksdb-dev
-          echo "ROCKSDB_LIB_DIR=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "$GITHUB_ENV"
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q librocksdb-dev
+            echo "ROCKSDB_LIB_DIR=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "$GITHUB_ENV"
+          elif [ "${RUNNER_OS}" = "macOS" ]; then
+            brew install coreutils rocksdb
+            echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+            echo "ROCKSDB_LIB_DIR=$(brew --prefix rocksdb)/lib" >> "$GITHUB_ENV"
+          else
+            echo "Unsupported runner OS: ${RUNNER_OS}" >&2
+            exit 1
+          fi
+
+      - name: Determine Bitcoin Core archive suffix
+        id: bitcoin_arch
+        run: |
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64)
+              echo "suffix=x86_64-linux-gnu" >> "$GITHUB_OUTPUT"
+              ;;
+            Linux-ARM64)
+              echo "suffix=aarch64-linux-gnu" >> "$GITHUB_OUTPUT"
+              ;;
+            macOS-X64)
+              echo "suffix=x86_64-apple-darwin" >> "$GITHUB_OUTPUT"
+              ;;
+            macOS-ARM64)
+              echo "suffix=arm64-apple-darwin" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported runner OS/arch: ${RUNNER_OS}-${RUNNER_ARCH}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: cargo fmt (warn only)
         run: cargo fmt -- --check
@@ -71,18 +111,23 @@ jobs:
         run: |
           VERSION="${{ steps.btc_version.outputs.stable_version }}"
           BASE_URL="${{ steps.btc_version.outputs.stable_base_url }}"
-          ARCH="x86_64-linux-gnu"
+          ARCH="${{ steps.bitcoin_arch.outputs.suffix }}"
           TARBALL="bitcoin-${VERSION}-${ARCH}.tar.gz"
 
           echo "Downloading stable ${BASE_URL}/${TARBALL}"
           curl -fsSL -O "${BASE_URL}/${TARBALL}"
           curl -fsSL -O "${BASE_URL}/SHA256SUMS"
-          grep "${TARBALL}" SHA256SUMS | sha256sum --check --status
+          python3 ./scripts/verify-sha256.py "${TARBALL}"
 
           tar -xzf "${TARBALL}"
-          sudo install -m 0755 -t /usr/local/bin \
-            "bitcoin-${VERSION}/bin/bitcoind" \
-            "bitcoin-${VERSION}/bin/bitcoin-cli"
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            sudo install -m 0755 "bitcoin-${VERSION}/bin/bitcoind" /usr/local/bin/bitcoind
+            sudo install -m 0755 "bitcoin-${VERSION}/bin/bitcoin-cli" /usr/local/bin/bitcoin-cli
+          else
+            sudo install -m 0755 -t /usr/local/bin \
+              "bitcoin-${VERSION}/bin/bitcoind" \
+              "bitcoin-${VERSION}/bin/bitcoin-cli"
+          fi
 
           echo "Stable bitcoind: $(bitcoind --version | head -1)"
 
@@ -91,7 +136,7 @@ jobs:
           STABLE="${{ steps.btc_version.outputs.stable_version }}"
           RC="${{ steps.btc_version.outputs.rc_version }}"
           BASE_URL="${{ steps.btc_version.outputs.rc_base_url }}"
-          ARCH="x86_64-linux-gnu"
+          ARCH="${{ steps.bitcoin_arch.outputs.suffix }}"
 
           if [ "$RC" = "$STABLE" ]; then
             echo "No RC distinct from stable — symlinking stable binaries as *-rc."
@@ -103,13 +148,18 @@ jobs:
             echo "Downloading RC ${BASE_URL}/${TARBALL}"
             curl -fsSL -O "${BASE_URL}/${TARBALL}"
             curl -fsSL -O "${BASE_URL}/SHA256SUMS"
-            grep "${TARBALL}" SHA256SUMS | sha256sum --check --status
+            python3 ./scripts/verify-sha256.py "${TARBALL}"
 
             tar -xzf "${TARBALL}"
-            sudo install -m 0755 \
-              -T "bitcoin-${RC}/bin/bitcoind"    /usr/local/bin/bitcoind-rc
-            sudo install -m 0755 \
-              -T "bitcoin-${RC}/bin/bitcoin-cli" /usr/local/bin/bitcoin-cli-rc
+            if [ "${RUNNER_OS}" = "macOS" ]; then
+              sudo install -m 0755 "bitcoin-${RC}/bin/bitcoind" /usr/local/bin/bitcoind-rc
+              sudo install -m 0755 "bitcoin-${RC}/bin/bitcoin-cli" /usr/local/bin/bitcoin-cli-rc
+            else
+              sudo install -m 0755 \
+                -T "bitcoin-${RC}/bin/bitcoind"    /usr/local/bin/bitcoind-rc
+              sudo install -m 0755 \
+                -T "bitcoin-${RC}/bin/bitcoin-cli" /usr/local/bin/bitcoin-cli-rc
+            fi
           fi
 
           echo "RC bitcoind: $(bitcoind-rc --version | head -1)"
@@ -221,17 +271,55 @@ jobs:
             -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
             -rpcport=18445 getblockchaininfo
 
+      - name: Mine additional regtest blocks on stable
+        run: |
+          set -euo pipefail
+
+          RPC_USER="${BITCOIND_RPC_USER}"
+          RPC_PASS="${BITCOIND_RPC_PASS}"
+
+          bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcport=18443 createwallet e2e >/dev/null 2>&1 || true
+
+          MINE_ADDR=$(bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcwallet=e2e -rpcport=18443 getnewaddress)
+
+          bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcwallet=e2e -rpcport=18443 generatetoaddress 101 "${MINE_ADDR}" >/dev/null
+
+          for i in $(seq 1 30); do
+            STABLE_BLOCKS=$(bitcoin-cli -regtest \
+              -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+              -rpcport=18443 getblockcount)
+            RC_BLOCKS=$(bitcoin-cli -regtest \
+              -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+              -rpcport=18445 getblockcount)
+            if [ "${STABLE_BLOCKS}" = "${RC_BLOCKS}" ]; then
+              echo "Nodes synced at height ${STABLE_BLOCKS}"
+              break
+            fi
+            echo "Waiting for RC sync... stable=${STABLE_BLOCKS} rc=${RC_BLOCKS} (${i}/30)"
+            sleep 1
+          done
+
+          if [ "${STABLE_BLOCKS}" != "${RC_BLOCKS}" ]; then
+            echo "RC did not sync after mining additional blocks" >&2
+            exit 1
+          fi
+
       # ---------------------------------------------------------------------------
       # Build the project and run the e2e regtest tests
       # ---------------------------------------------------------------------------
       - name: cargo build
         run: cargo build --all-targets
 
-      - name: Exercise all bins
+      - name: Exercise bridge binary
         run: |
           set -euo pipefail
 
-          # Main bridge binary on regtest (expects to keep running until timeout).
           set +e
           timeout 20s cargo run --bin nakamoto-electrs -- \
             --network regtest \
@@ -242,18 +330,80 @@ jobs:
           if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
             exit "$status"
           fi
+      - name: Exercise all examples sequentially
+        run: |
+          set -euo pipefail
 
-          # Standalone nakamoto binary (long-running service; timeout is expected).
           set +e
-          timeout 10s cargo run --bin nakamoto
+          timeout 10s cargo run --example nakamoto
           status=$?
           set -e
           if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
             exit "$status"
           fi
 
-          # Standalone electrs binary (feature-gated).
-          cargo run --features electrs-bin --bin electrs -- --help
+          set +e
+          ELECTRS_CONF="$RUNNER_TEMP/electrs-regtest.toml"
+          python3 - "$ELECTRS_CONF" "$HOME/.bitcoin-stable" "${BITCOIND_RPC_USER}" "${BITCOIND_RPC_PASS}" <<'PY'
+          from pathlib import Path
+          import sys
+
+          config_path = Path(sys.argv[1])
+          daemon_dir = sys.argv[2]
+          rpc_user = sys.argv[3]
+          rpc_pass = sys.argv[4]
+          config_path.write_text(
+              f'network = "regtest"\n'
+              f'daemon_dir = "{daemon_dir}"\n'
+              f'auth = "{rpc_user}:{rpc_pass}"\n'
+          )
+          PY
+          timeout 10s cargo run --features electrs-bin --example electrs -- \
+            --conf "$ELECTRS_CONF"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+            exit "$status"
+          fi
+
+      - name: Mine additional regtest blocks after exercise
+        run: |
+          set -euo pipefail
+
+          RPC_USER="${BITCOIND_RPC_USER}"
+          RPC_PASS="${BITCOIND_RPC_PASS}"
+
+          bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcport=18443 createwallet e2e >/dev/null 2>&1 || true
+
+          MINE_ADDR=$(bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcwallet=e2e -rpcport=18443 getnewaddress)
+
+          bitcoin-cli -regtest \
+            -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+            -rpcwallet=e2e -rpcport=18443 generatetoaddress 2 "${MINE_ADDR}" >/dev/null
+
+          for i in $(seq 1 30); do
+            STABLE_BLOCKS=$(bitcoin-cli -regtest \
+              -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+              -rpcport=18443 getblockcount)
+            RC_BLOCKS=$(bitcoin-cli -regtest \
+              -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+              -rpcport=18445 getblockcount)
+            if [ "${STABLE_BLOCKS}" = "${RC_BLOCKS}" ]; then
+              echo "Nodes synced after post-exercise mining at height ${STABLE_BLOCKS}"
+              break
+            fi
+            echo "Waiting for RC sync after post-exercise mining... stable=${STABLE_BLOCKS} rc=${RC_BLOCKS} (${i}/30)"
+            sleep 1
+          done
+
+          if [ "${STABLE_BLOCKS}" != "${RC_BLOCKS}" ]; then
+            echo "RC did not sync after post-exercise mining" >&2
+            exit 1
+          fi
 
       - name: Run e2e regtest tests (nocapture)
         run: |
