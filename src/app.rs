@@ -1,6 +1,9 @@
 use std::net::TcpStream;
+use std::fs;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use nakamoto_client::{Client, handle::Handle as _};
@@ -19,6 +22,8 @@ use crate::{
 };
 
 type NodeReactor = Reactor<TcpStream>;
+
+const CLIENT_STARTUP_WAIT: Duration = Duration::from_secs(2);
 
 pub fn run_bridge(cfg: Config) -> Result<()> {
     let subscriber = FmtSubscriber::builder()
@@ -43,26 +48,48 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
         crate::Network::Regtest => nakamoto_client::Network::Regtest,
     };
     let mut nk_cfg = nakamoto_client::Config::new(nk_network);
-    nk_cfg.root = cfg.index_dir.clone();
+    nk_cfg.root = cfg.index_dir.join("nakamoto");
     nk_cfg.connect = cfg.nakamoto_peers.clone();
-
-    let client = Client::<NodeReactor>::new()?;
-    let handle = client.handle();
-
-    let client_thread = {
+    let cache_dir = nk_cfg.root.join(".nakamoto");
+    let (handle, client_thread) = loop {
+        let client = Client::<NodeReactor>::new()?;
+        let handle = client.handle();
+        let (tx, rx) = mpsc::channel::<String>();
         let nk_cfg = nk_cfg.clone();
-        thread::Builder::new()
+        let thread_handle = thread::Builder::new()
             .name("nakamoto".into())
             .spawn(move || {
                 if let Err(e) = client.run(nk_cfg) {
+                    let _ = tx.send(e.to_string());
                     error!("nakamoto client exited: {e:#}");
                 }
-            })?
+            })?;
+
+        match rx.recv_timeout(CLIENT_STARTUP_WAIT) {
+            Ok(err) if err.contains("stored genesis header doesn't match network genesis") => {
+                error!(
+                    "nakamoto cache mismatch detected; clearing {:?} and retrying",
+                    cache_dir
+                );
+                let _ = fs::remove_dir_all(&cache_dir);
+                let _ = thread_handle.join();
+                continue;
+            }
+            Ok(err) => {
+                let _ = thread_handle.join();
+                return Err(anyhow::anyhow!(err));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => break (handle, thread_handle),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = thread_handle.join();
+                return Err(anyhow::anyhow!("nakamoto client startup channel disconnected"));
+            }
+        }
     };
 
     let metrics = Metrics::new();
     let source = Arc::new(NakamotoBlockSource::new(handle.clone()));
-    let indexer = Indexer::new(cfg.index_dir.clone(), metrics.clone())?;
+    let indexer = Indexer::new(cfg.index_dir.join("index"), metrics.clone())?;
     let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(handle.clone());
     let fee_rate = Arc::new(FeeRateState::new());
 
@@ -111,10 +138,6 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    let client = Client::<NodeReactor>::new()?;
-    let handle = client.handle();
-    let events = handle.events();
-
     let nk_network = match cfg.network {
         crate::Network::Mainnet => nakamoto_client::Network::Mainnet,
         crate::Network::Testnet => nakamoto_client::Network::Testnet,
@@ -122,22 +145,54 @@ pub fn run_nakamoto(cfg: NakamotoConfig) -> Result<()> {
         crate::Network::Regtest => nakamoto_client::Network::Regtest,
     };
     let mut config = nakamoto_client::Config::new(nk_network);
-    config.root = cfg.index_dir.clone();
+    config.root = cfg.index_dir.join("nakamoto");
     config.connect = cfg.nakamoto_peers.clone();
+
+    let cache_dir = config.root.join(".nakamoto");
+    let (handle, client_runner) = loop {
+        let client = Client::<NodeReactor>::new()?;
+        let handle = client.handle();
+        let (tx, rx) = mpsc::channel::<String>();
+        let config = config.clone();
+        let thread_handle = thread::Builder::new()
+            .name("nakamoto".into())
+            .spawn(move || {
+                if let Err(e) = client.run(config) {
+                    let _ = tx.send(e.to_string());
+                    error!(target: "nakamoto", "client exited: {e:#}");
+                }
+            })?;
+
+        match rx.recv_timeout(CLIENT_STARTUP_WAIT) {
+            Ok(err) if err.contains("stored genesis header doesn't match network genesis") => {
+                error!(
+                    target: "nakamoto",
+                    "nakamoto cache mismatch detected; clearing {:?} and retrying",
+                    cache_dir
+                );
+                let _ = fs::remove_dir_all(&cache_dir);
+                let _ = thread_handle.join();
+                continue;
+            }
+            Ok(err) => {
+                let _ = thread_handle.join();
+                return Err(anyhow::anyhow!(err));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => break (handle, thread_handle),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = thread_handle.join();
+                return Err(anyhow::anyhow!("nakamoto client startup channel disconnected"));
+            }
+        }
+    };
+
+    let events = handle.events();
 
     let event_logger = thread::Builder::new()
         .name("nk-events".into())
         .spawn(move || {
             for event in &events {
                 info!(target: "nakamoto", ?event);
-            }
-        })?;
-
-    let client_runner = thread::Builder::new()
-        .name("nakamoto".into())
-        .spawn(move || {
-            if let Err(e) = client.run(config) {
-                error!(target: "nakamoto", "client exited: {e:#}");
             }
         })?;
 

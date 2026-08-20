@@ -25,8 +25,8 @@ pub struct Config {
     /// its built-in DNS seeds.
     pub nakamoto_peers: Vec<SocketAddr>,
 
-    /// Directory where nakamoto stores its block-header and filter caches, and
-    /// where the Electrum index is persisted.
+    /// Base directory for runtime data. nakamoto caches live in `nakamoto/`
+    /// and the Electrum index persists in `index/`.
     pub index_dir: PathBuf,
 
     /// Maximum log verbosity level.

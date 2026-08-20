@@ -69,7 +69,7 @@ Options:
 |---|---|---|
 | `--network <net>` | `testnet` | Bitcoin network (`mainnet`, `testnet`, `signet`, `regtest`) |
 | `--listen <addr>` | `127.0.0.1:<port>` | Electrum listener address |
-| `--data-dir <path>` | `~/.nakamoto-electrs/<network>` | Index and headers directory |
+| `--data-dir <path>` | `~/.nakamoto-electrs/<network>` | Base runtime data directory (`nakamoto/` + `index/`) |
 | `--peer <addr>` | *(DNS seeds)* | Explicit nakamoto peer (repeatable) |
 | `--log <level>` | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
 
