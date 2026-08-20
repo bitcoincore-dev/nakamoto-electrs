@@ -16,7 +16,7 @@ use std::thread;
 
 use anyhow::Result;
 use bitcoin::hashes::{Hash, sha256};
-use bitcoin::{Block, Script, Transaction, Txid};
+use bitcoin::{Block, OutPoint, Script, Transaction, Txid};
 use tracing::{debug, info, warn};
 
 use crate::block_source::{BlockEvent, BlockSource};
@@ -74,9 +74,17 @@ pub struct TxEntry {
 
 struct IndexState {
     history: HashMap<ScriptHash, Vec<TxEntry>>,
-    by_height: HashMap<u32, Vec<(ScriptHash, Txid, Vec<u8>)>>,
+    by_height: HashMap<u32, Vec<BlockAction>>,
     tip_height: u32,
     store: PersistentIndex,
+}
+
+#[derive(Debug, Clone)]
+enum BlockAction {
+    Tx(Txid),
+    History(Vec<u8>),
+    Output { outpoint: OutPoint },
+    Spend { outpoint: OutPoint },
 }
 
 impl IndexState {
@@ -102,11 +110,10 @@ impl IndexState {
                     txid: entry.txid,
                     height: entry.height,
                 });
-            self.by_height.entry(entry.height).or_default().push((
-                entry.script_hash,
-                entry.txid,
-                entry.history_key,
-            ));
+            self.by_height
+                .entry(entry.height)
+                .or_default()
+                .push(BlockAction::History(entry.history_key));
         }
         Ok(())
     }
@@ -115,17 +122,66 @@ impl IndexState {
         for tx in &block.txdata {
             let txid = tx.compute_txid();
             self.store.store_tx(tx)?;
+            self.by_height
+                .entry(height)
+                .or_default()
+                .push(BlockAction::Tx(txid));
+            for (input_index, input) in tx.input.iter().enumerate() {
+                let prevout = input.previous_output;
+                if prevout.is_null() {
+                    continue;
+                }
+                if let Some(stored_output) = self.store.load_output(&prevout)? {
+                    let sh = stored_output.script_hash;
+                    let entry = TxEntry { txid, height };
+                    self.history.entry(sh).or_default().push(entry);
+                    let history_key = self.store.store_history_entry(
+                        sh,
+                        height,
+                        txid,
+                        input_index as u32,
+                        crate::store::HistoryKind::Spend,
+                    )?;
+                    self.store
+                        .delete_utxo(sh, stored_output.txid, stored_output.vout)?;
+                    self.by_height
+                        .entry(height)
+                        .or_default()
+                        .push(BlockAction::History(history_key));
+                    self.by_height
+                        .entry(height)
+                        .or_default()
+                        .push(BlockAction::Spend { outpoint: prevout });
+                }
+            }
             for (output_index, output) in tx.output.iter().enumerate() {
                 let sh = ScriptHash::from_script(&output.script_pubkey);
                 let entry = TxEntry { txid, height };
                 self.history.entry(sh).or_default().push(entry);
                 let history_key =
                     self.store
-                        .store_history_entry(sh, height, txid, output_index as u32)?;
+                        .store_history_entry(
+                            sh,
+                            height,
+                            txid,
+                            output_index as u32,
+                            crate::store::HistoryKind::Fund,
+                        )?;
+                let outpoint = OutPoint::new(txid, output_index as u32);
+                self.store.store_output(
+                    outpoint,
+                    sh,
+                    output.value.to_sat(),
+                    height,
+                )?;
                 self.by_height
                     .entry(height)
                     .or_default()
-                    .push((sh, txid, history_key));
+                    .push(BlockAction::History(history_key));
+                self.by_height
+                    .entry(height)
+                    .or_default()
+                    .push(BlockAction::Output { outpoint });
             }
         }
         self.tip_height = height;
@@ -135,16 +191,42 @@ impl IndexState {
 
     fn rollback_height(&mut self, height: u32) -> Result<()> {
         if let Some(entries) = self.by_height.remove(&height) {
-            for (sh, txid, history_key) in entries.into_iter().rev() {
-                self.store.delete_history_key(&history_key)?;
-                self.store.delete_tx(&txid)?;
-                if let Some(script_entries) = self.history.get_mut(&sh) {
-                    script_entries.retain(|e| !(e.txid == txid && e.height == height));
-                    if script_entries.is_empty() {
-                        self.history.remove(&sh);
+            let mut txids = Vec::new();
+            for action in entries.into_iter().rev() {
+                match action {
+                    BlockAction::Tx(txid) => txids.push(txid),
+                    BlockAction::History(history_key) => {
+                        self.store.delete_history_key(&history_key)?;
+                    }
+                    BlockAction::Output { outpoint } => {
+                        if let Some(stored_output) = self.store.load_output(&outpoint)? {
+                            self.store.delete_utxo(
+                                stored_output.script_hash,
+                                stored_output.txid,
+                                stored_output.vout,
+                            )?;
+                        }
+                        self.store.delete_output(&outpoint)?;
+                    }
+                    BlockAction::Spend { outpoint } => {
+                        if let Some(stored_output) = self.store.load_output(&outpoint)? {
+                            self.store.store_output(
+                                outpoint,
+                                stored_output.script_hash,
+                                stored_output.value,
+                                stored_output.height,
+                            )?;
+                        }
                     }
                 }
             }
+            for txid in txids {
+                self.store.delete_tx(&txid)?;
+            }
+            for script_entries in self.history.values_mut() {
+                script_entries.retain(|e| e.height != height);
+            }
+            self.history.retain(|_, entries| !entries.is_empty());
         }
         if self.tip_height == height {
             self.tip_height = height.saturating_sub(1);
@@ -169,6 +251,10 @@ impl IndexState {
 
     fn get_transaction(&self, txid: &Txid) -> Result<Option<Transaction>> {
         self.store.load_tx(txid)
+    }
+
+    fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
+        self.store.balance_for_script(sh)
     }
 }
 
@@ -257,6 +343,10 @@ impl Indexer {
             .expect("index read lock poisoned")
             .get_transaction(txid)
     }
+
+    pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
+        self.state.read().expect("index read lock poisoned").get_balance(sh)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +366,7 @@ mod tests {
     };
 
     fn make_state() -> IndexState {
-        let dir = tempfile::tempdir().expect("temp dir").into_path();
+        let dir = tempfile::tempdir().expect("temp dir").keep();
         IndexState::new(dir).expect("state")
     }
 

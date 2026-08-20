@@ -41,6 +41,9 @@ debug = 0
 debug-assertions = false
 strip = "debuginfo"
 
+[profile.test]
+overflow-checks = false
+
 [profile.release]
 debug = 0
 debug-assertions = false

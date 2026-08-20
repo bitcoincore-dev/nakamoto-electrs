@@ -273,12 +273,11 @@ fn handle_scripthash_get_balance(
     indexer: &Indexer,
 ) -> std::result::Result<Value, String> {
     let sh = parse_scripthash(params)?;
-    let entries = indexer.get_history(&sh);
-    // Without a UTXO set we can't distinguish spent vs unspent; return
-    // placeholder values indicating we have history but cannot compute balance.
-    let has_history = !entries.is_empty();
+    let confirmed = indexer
+        .get_balance(&sh)
+        .map_err(|e| format!("balance lookup failed: {e:#}"))?;
     Ok(json!({
-        "confirmed": if has_history { -1i64 } else { 0i64 },
+        "confirmed": confirmed,
         "unconfirmed": 0
     }))
 }
@@ -473,7 +472,7 @@ mod tests {
             }
         }
 
-        let dir = tempfile::tempdir().expect("temp index dir").into_path();
+        let dir = tempfile::tempdir().expect("temp index dir").keep();
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
         let source = FakeSource;
         let mut state = ClientState::new();

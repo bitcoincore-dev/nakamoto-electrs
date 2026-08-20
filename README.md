@@ -134,10 +134,10 @@ cargo test --test e2e_regtest -- --ignored
 
 ## Known limitations
 
-* **No UTXO set** — spending-input indexing and accurate balance tracking
-  still require a UTXO database.
-* **Persistent index** — history and raw transaction lookups survive restarts
-  via the embedded store.  A future version will add a UTXO database.
+* **Confirmed-only balance** — UTXO tracking covers indexed chain blocks, but
+  unconfirmed/mempool balance is still not modeled.
+* **Persistent index** — history, raw transaction lookups, and confirmed UTXOs
+  survive restarts via the embedded store.
 * **No transaction broadcast** — `blockchain.transaction.broadcast` parses and
   validates the transaction but does not yet forward it to the nakamoto handle.
 * **nakamoto is SPV** — nakamoto downloads compact block filters (BIP 157/158)
