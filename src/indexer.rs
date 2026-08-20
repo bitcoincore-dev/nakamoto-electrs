@@ -265,7 +265,7 @@ impl IndexState {
                 }
                 if let Some(output) = self.store.load_output(&prevout)? {
                     input_value = input_value.saturating_add(output.value);
-                } else if let Some(output) = self.pending_outputs.get(&prevout) {
+                } else if let Some(output) = self.pending_output_for_outpoint(&prevout) {
                     input_value = input_value.saturating_add(output.value);
                     has_unconfirmed_input = true;
                 } else {
@@ -324,13 +324,28 @@ impl IndexState {
     }
 
     fn script_hash_for_outpoint(&self, outpoint: &OutPoint) -> Result<Option<ScriptHash>> {
-        if let Some(output) = self.pending_outputs.get(outpoint) {
+        if let Some(output) = self.pending_output_for_outpoint(outpoint) {
             return Ok(Some(output.script_hash));
         }
         Ok(self
             .store
             .load_output(outpoint)?
             .map(|output| output.script_hash))
+    }
+
+    fn pending_output_for_outpoint(&self, outpoint: &OutPoint) -> Option<StoredOutput> {
+        self.pending_outputs.get(outpoint).copied().or_else(|| {
+            self.pending_txs
+                .get(&outpoint.txid)
+                .and_then(|tx| tx.output.get(outpoint.vout as usize))
+                .map(|output| StoredOutput {
+                    script_hash: ScriptHash::from_script(&output.script_pubkey),
+                    txid: outpoint.txid,
+                    vout: outpoint.vout,
+                    value: output.value.to_sat(),
+                    height: 0,
+                })
+        })
     }
 
     fn unconfirmed_balance_delta_for_script(&self, sh: &ScriptHash) -> Result<i64> {
@@ -350,7 +365,7 @@ impl IndexState {
                         let value = self
                             .store
                             .load_output(&prevout)?
-                            .or_else(|| self.pending_outputs.get(&prevout).copied())
+                            .or_else(|| self.pending_output_for_outpoint(&prevout))
                             .map(|o| o.value)
                             .unwrap_or(0);
                         delta -= value as i64;
@@ -1002,6 +1017,81 @@ mod tests {
         assert_eq!(unspent.len(), 1);
         assert_eq!(unspent[0].value, 1000);
         assert_eq!(unspent[0].height, 1);
+    }
+
+    #[test]
+    fn get_mempool_marks_unconfirmed_ancestors() {
+        let mut state = make_state();
+        let script_a = p2pkh_script();
+        let script_b = vec![0x51];
+        let fund_block = make_block(1, vec![script_a.clone()]);
+        let fund_txid = fund_block.txdata[0].compute_txid();
+        let prevout = bitcoin::OutPoint::new(fund_txid, 0);
+        state.apply_block(&fund_block, 1).expect("apply fund");
+
+        let pending = make_spend_block(2, prevout, script_b.clone())
+            .txdata
+            .into_iter()
+            .next()
+            .expect("pending tx");
+        state
+            .track_pending_transaction_internal(&pending)
+            .expect("track pending");
+
+        let sh_a = ScriptHash::from_script(&Builder::from(script_a).into_script());
+        let sh_b = ScriptHash::from_script(&Builder::from(script_b).into_script());
+
+        let mempool_a = state.mempool(&sh_a).expect("mempool a");
+        assert_eq!(mempool_a.len(), 1);
+        assert_eq!(mempool_a[0].height, 0);
+        assert_eq!(mempool_a[0].fee, 100);
+
+        let mempool_b = state.mempool(&sh_b).expect("mempool b");
+        assert_eq!(mempool_b.len(), 1);
+        assert_eq!(mempool_b[0].height, 0);
+        assert_eq!(mempool_b[0].fee, 100);
+    }
+
+    #[test]
+    fn get_mempool_marks_pending_input_as_unconfirmed() {
+        let mut state = make_state();
+        let script_a = p2pkh_script();
+        let script_b = vec![0x51];
+        let first_pending = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: Builder::from(script_a.clone()).into_script(),
+            }],
+        };
+        state
+            .track_pending_transaction_internal(&first_pending)
+            .expect("track first");
+        let spend = make_spend_block(
+            2,
+            bitcoin::OutPoint::new(first_pending.compute_txid(), 0),
+            script_b.clone(),
+        )
+        .txdata
+        .into_iter()
+        .next()
+        .expect("spend tx");
+        state
+            .track_pending_transaction_internal(&spend)
+            .expect("track spend");
+
+        let sh_b = ScriptHash::from_script(&Builder::from(script_b).into_script());
+        let mempool_b = state.mempool(&sh_b).expect("mempool b");
+        assert_eq!(mempool_b.len(), 1);
+        assert_eq!(mempool_b[0].height, -1);
+        assert_eq!(mempool_b[0].fee, 100);
     }
 
     #[test]
