@@ -11,7 +11,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use crate::{
     config::{Config, NakamotoConfig},
-    electrum_server::ElectrumServer,
+    electrum_server::{ElectrumServer, TransactionBroadcaster},
     indexer::Indexer,
     metrics::Metrics,
     nakamoto_source::NakamotoBlockSource,
@@ -62,6 +62,7 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
     let metrics = Metrics::new();
     let source = Arc::new(NakamotoBlockSource::new(handle.clone()));
     let indexer = Indexer::new(cfg.index_dir.clone(), metrics.clone())?;
+    let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(handle.clone());
 
     let _indexer_thread = indexer.clone().start(source.as_ref());
 
@@ -73,7 +74,8 @@ pub fn run_bridge(cfg: Config) -> Result<()> {
         }
     }
 
-    let server = ElectrumServer::bind(cfg.electrum_listen_addr, indexer, metrics)?;
+    let server =
+        ElectrumServer::bind(cfg.electrum_listen_addr, indexer, metrics, Some(broadcaster))?;
 
     info!("Electrum server ready on {}", cfg.electrum_listen_addr);
     server.run(source)?;

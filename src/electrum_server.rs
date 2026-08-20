@@ -31,12 +31,23 @@ use std::thread;
 use anyhow::{Context, Result};
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::{Transaction, consensus::deserialize};
+use nakamoto_client::handle::Handle as NakamotoHandle;
 use serde_json::{Value, json};
 use tracing::{debug, error, info, warn};
 
 use crate::block_source::BlockSource;
 use crate::indexer::{Indexer, ScriptHash};
 use crate::metrics::Metrics;
+
+pub trait TransactionBroadcaster: Send + Sync {
+    fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String>;
+}
+
+impl<W> TransactionBroadcaster for NakamotoHandle<W> {
+    fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String> {
+        self.submit_transaction(tx).map(|_| ()).map_err(|e| format!("{e:#}"))
+    }
+}
 
 const PROTOCOL_VERSION: &str = "1.4";
 const SERVER_VERSION: &str = concat!("nakamoto-electrs/", env!("CARGO_PKG_VERSION"));
@@ -52,17 +63,24 @@ pub struct ElectrumServer {
     listener: TcpListener,
     indexer: Indexer,
     metrics: Metrics,
+    broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
 }
 
 impl ElectrumServer {
     /// Bind the server to the given address.
-    pub fn bind(addr: std::net::SocketAddr, indexer: Indexer, metrics: Metrics) -> Result<Self> {
+    pub fn bind(
+        addr: std::net::SocketAddr,
+        indexer: Indexer,
+        metrics: Metrics,
+        broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
+    ) -> Result<Self> {
         let listener = TcpListener::bind(addr).context("failed to bind Electrum listener")?;
         info!("Electrum server listening on {addr}");
         Ok(Self {
             listener,
             indexer,
             metrics,
+            broadcaster,
         })
     }
 
@@ -81,6 +99,7 @@ impl ElectrumServer {
     pub fn run<S: BlockSource + Sync>(self, source: Arc<S>) -> Result<()> {
         let indexer = Arc::new(self.indexer);
         let metrics = Arc::new(self.metrics);
+        let broadcaster = self.broadcaster.clone();
 
         for stream in self.listener.incoming() {
             match stream {
@@ -94,13 +113,16 @@ impl ElectrumServer {
                     let indexer = Arc::clone(&indexer);
                     let source = Arc::clone(&source);
                     let metrics = Arc::clone(&metrics);
+                    let broadcaster = broadcaster.clone();
 
                     metrics.inc_electrum_connections();
 
                     thread::Builder::new()
                         .name(format!("electrum-{peer}"))
                         .spawn(move || {
-                            if let Err(e) = handle_client(stream, &indexer, &source, &metrics) {
+                            if let Err(e) =
+                                handle_client(stream, &indexer, &source, &metrics, broadcaster)
+                            {
                                 debug!("client {peer} disconnected: {e:#}");
                             }
                             metrics.dec_electrum_connections();
@@ -139,6 +161,7 @@ fn handle_client<S: BlockSource>(
     indexer: &Indexer,
     source: &S,
     metrics: &Metrics,
+    broadcaster: Option<Arc<dyn TransactionBroadcaster>>,
 ) -> Result<()> {
     let peer = stream.peer_addr()?.to_string();
     let mut writer = stream.try_clone().context("clone stream for write")?;
@@ -153,7 +176,14 @@ fn handle_client<S: BlockSource>(
         debug!("← {peer}: {line}");
         metrics.inc_electrum_requests();
 
-        let response = dispatch_request(&line, &mut state, indexer, source, metrics);
+        let response = dispatch_request(
+            &line,
+            &mut state,
+            indexer,
+            source,
+            metrics,
+            broadcaster.as_ref(),
+        );
         let response_str = serde_json::to_string(&response)? + "\n";
         debug!("→ {peer}: {}", response_str.trim_end());
         writer
@@ -173,6 +203,7 @@ fn dispatch_request<S: BlockSource>(
     indexer: &Indexer,
     source: &S,
     metrics: &Metrics,
+    broadcaster: Option<&Arc<dyn TransactionBroadcaster>>,
 ) -> Value {
     let req: Value = match serde_json::from_str(raw) {
         Ok(v) => v,
@@ -202,7 +233,9 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.scripthash.get_balance" => handle_scripthash_get_balance(&params, indexer),
         "blockchain.scripthash.subscribe" => handle_scripthash_subscribe(&params, state, indexer),
         "blockchain.transaction.get" => handle_transaction_get(&params, indexer),
-        "blockchain.transaction.broadcast" => handle_transaction_broadcast(&params, metrics),
+        "blockchain.transaction.broadcast" => {
+            handle_transaction_broadcast(&params, metrics, broadcaster)
+        }
         "blockchain.estimatefee" => handle_estimatefee(&params),
         "blockchain.block.header" => handle_block_header(&params, source),
         "blockchain.block.headers" => handle_block_headers(&params, source),
@@ -318,20 +351,25 @@ fn handle_transaction_get(params: &Value, indexer: &Indexer) -> std::result::Res
 fn handle_transaction_broadcast(
     params: &Value,
     metrics: &Metrics,
+    broadcaster: Option<&Arc<dyn TransactionBroadcaster>>,
 ) -> std::result::Result<Value, String> {
     let raw_hex = params
         .get(0)
         .and_then(Value::as_str)
         .ok_or("missing raw transaction hex")?;
     let raw_bytes = hex::decode(raw_hex).map_err(|e| format!("invalid hex: {e}"))?;
-    let _tx: Transaction =
+    let tx: Transaction =
         deserialize(&raw_bytes).map_err(|e| format!("invalid transaction: {e}"))?;
+    let txid = tx.compute_txid();
 
-    // The actual broadcast requires a reference to the nakamoto handle, which
-    // is not threaded into this function yet.  We record the metric and return
-    // a placeholder error explaining the limitation.
     metrics.inc_transactions_broadcast();
-    Err("transaction broadcast not yet wired to nakamoto handle; parsed OK".into())
+    match broadcaster {
+        Some(broadcaster) => {
+            broadcaster.broadcast_transaction(tx).map_err(|e| format!("broadcast failed: {e}"))?;
+            Ok(Value::String(txid.to_string()))
+        }
+        None => Err("transaction broadcast not available in this mode".into()),
+    }
 }
 
 fn handle_estimatefee(params: &Value) -> std::result::Result<Value, String> {
