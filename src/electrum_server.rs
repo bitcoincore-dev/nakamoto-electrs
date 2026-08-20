@@ -26,8 +26,9 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
 use std::thread;
+use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use bitcoin::consensus::encode::{serialize, serialize_hex};
@@ -189,12 +190,15 @@ impl ElectrumServer {
 struct ClientState {
     /// Script hashes subscribed by this client.
     subscribed_scripthashes: Vec<ScriptHash>,
+    /// Last status sent to the client for each subscribed script hash.
+    status_by_scripthash: HashMap<ScriptHash, Option<String>>,
 }
 
 impl ClientState {
     fn new() -> Self {
         Self {
             subscribed_scripthashes: Vec::new(),
+            status_by_scripthash: HashMap::new(),
         }
     }
 }
@@ -208,9 +212,51 @@ fn handle_client<S: BlockSource>(
     fee_rate: &Arc<FeeRateState>,
 ) -> Result<()> {
     let peer = stream.peer_addr()?.to_string();
-    let mut writer = stream.try_clone().context("clone stream for write")?;
+    let writer = Arc::new(Mutex::new(stream.try_clone().context("clone stream for write")?));
     let reader = BufReader::new(stream);
-    let mut state = ClientState::new();
+    let state = Arc::new(Mutex::new(ClientState::new()));
+    let events = source.subscribe();
+    let notifications = {
+        let writer = Arc::clone(&writer);
+        let indexer = indexer.clone();
+        let state = Arc::clone(&state);
+        thread::Builder::new()
+            .name(format!("electrum-notify-{peer}"))
+            .spawn(move || {
+                for event in &events {
+                    if matches!(
+                        event,
+                        crate::block_source::BlockEvent::Connected { .. }
+                            | crate::block_source::BlockEvent::Disconnected { .. }
+                    ) {
+                        let mut changed = Vec::new();
+                        {
+                            let mut state = state.lock().expect("electrum state poisoned");
+                            let subs = state.subscribed_scripthashes.clone();
+                            for sh in subs {
+                                let status = compute_status_hash(&indexer.get_history(&sh));
+                                let entry = state.status_by_scripthash.entry(sh).or_insert(None);
+                                if *entry != status {
+                                    *entry = status.clone();
+                                    changed.push((sh, status));
+                                }
+                            }
+                        }
+                        for (sh, status) in changed {
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "method": "blockchain.scripthash.subscribe",
+                                "params": [sh.to_hex(), status],
+                            });
+                            if write_json(&writer, &response).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .ok()
+    };
 
     for line in reader.lines() {
         let line = line.context("read line")?;
@@ -220,21 +266,22 @@ fn handle_client<S: BlockSource>(
         debug!("← {peer}: {line}");
         metrics.inc_electrum_requests();
 
-        let response = dispatch_request(
-            &line,
-            &mut state,
-            indexer,
-            source,
-            metrics,
-            broadcaster.as_ref(),
-            fee_rate,
-        );
-        let response_str = serde_json::to_string(&response)? + "\n";
-        debug!("→ {peer}: {}", response_str.trim_end());
-        writer
-            .write_all(response_str.as_bytes())
-            .context("write response")?;
+        let response = {
+            let mut state = state.lock().expect("electrum state poisoned");
+            dispatch_request(
+                &line,
+                &mut state,
+                indexer,
+                source,
+                metrics,
+                broadcaster.as_ref(),
+                fee_rate,
+            )
+        };
+        debug!("→ {peer}: {}", serde_json::to_string(&response)?.trim_end());
+        write_json(&writer, &response)?;
     }
+    let _ = notifications;
     Ok(())
 }
 
@@ -395,7 +442,9 @@ fn handle_scripthash_subscribe(
         state.subscribed_scripthashes.push(sh);
     }
     let history = indexer.get_history(&sh);
-    Ok(match compute_status_hash(&history) {
+    let status = compute_status_hash(&history);
+    state.status_by_scripthash.insert(sh, status.clone());
+    Ok(match status {
         Some(status) => Value::String(status),
         None => Value::Null,
     })
@@ -532,6 +581,13 @@ fn compute_status_hash(history: &[crate::indexer::TxEntry]) -> Option<String> {
     }
 
     Some(sha256::Hash::hash(data.as_bytes()).to_string())
+}
+
+fn write_json(writer: &Arc<std::sync::Mutex<TcpStream>>, value: &Value) -> Result<()> {
+    let mut writer = writer.lock().expect("electrum writer poisoned");
+    let response_str = serde_json::to_string(value)? + "\n";
+    writer.write_all(response_str.as_bytes())?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -688,5 +744,17 @@ mod tests {
         let fee_rate = Arc::new(FeeRateState::new());
         let value = handle_estimatefee(&json!([6]), &fee_rate).expect("estimate");
         assert_eq!(value, json!(-1));
+    }
+
+    #[test]
+    fn scripthash_subscribe_records_status() {
+        let params = json!(["0".repeat(64)]);
+        let mut state = ClientState::new();
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let resp = handle_scripthash_subscribe(&params, &mut state, &indexer).expect("subscribe");
+        assert!(resp.is_null());
+        assert_eq!(state.subscribed_scripthashes.len(), 1);
+        assert_eq!(state.status_by_scripthash.len(), 1);
     }
 }
