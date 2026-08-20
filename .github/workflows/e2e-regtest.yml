@@ -38,6 +38,12 @@ jobs:
             ${{ runner.os }}-cargo-e2e-
             ${{ runner.os }}-cargo-
 
+      - name: Install RocksDB system library
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q librocksdb-dev
+          echo "ROCKSDB_LIB_DIR=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "$GITHUB_ENV"
+
       - name: cargo fmt (warn only)
         run: cargo fmt -- --check
         continue-on-error: true
