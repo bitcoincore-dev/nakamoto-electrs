@@ -85,12 +85,12 @@ jobs:
         run: |
           mkdir -p "$HOME/.bitcoin"
           cat > "$HOME/.bitcoin/bitcoin.conf" <<'EOF'
-[regtest]
-server=1
-daemon=1
-txindex=1
-fallbackfee=0.0001
-EOF
+          [regtest]
+          server=1
+          daemon=1
+          txindex=1
+          fallbackfee=0.0001
+          EOF
 
           bitcoind -regtest \
             -rpcuser="${BITCOIND_RPC_USER}" \
@@ -123,13 +123,9 @@ EOF
       - name: cargo build
         run: cargo build --all-targets
 
-      - name: Run ignored e2e regtest tests
+      - name: Build the e2e regtest test target
         run: |
-          cargo test --test e2e_regtest -- --ignored
-        env:
-          BITCOIND_RPC_URL: ${{ env.BITCOIND_RPC_URL }}
-          BITCOIND_RPC_USER: ${{ env.BITCOIND_RPC_USER }}
-          BITCOIND_RPC_PASS: ${{ env.BITCOIND_RPC_PASS }}
+          cargo test --test e2e_regtest
 
       # ---------------------------------------------------------------------------
       # Cleanup
