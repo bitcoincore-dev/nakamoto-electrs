@@ -10,6 +10,8 @@ use sled::Tree;
 
 use crate::indexer::{ScriptHash, TxEntry};
 
+const PENDING_TXIDS_KEY: &[u8] = b"pending_txids";
+
 #[derive(Clone)]
 pub struct PersistentIndex {
     history: Tree,
@@ -136,6 +138,29 @@ impl PersistentIndex {
     pub fn delete_tx(&self, txid: &Txid) -> Result<()> {
         self.txs.remove(txid.as_byte_array())?;
         Ok(())
+    }
+
+    pub fn store_pending_txid(&self, txid: Txid) -> Result<()> {
+        let mut txids = self.load_pending_txids()?;
+        if !txids.iter().any(|existing| existing == &txid) {
+            txids.push(txid);
+        }
+        self.meta.insert(PENDING_TXIDS_KEY, encode_txid_list(&txids))?;
+        Ok(())
+    }
+
+    pub fn delete_pending_txid(&self, txid: &Txid) -> Result<()> {
+        let mut txids = self.load_pending_txids()?;
+        txids.retain(|existing| existing != txid);
+        self.meta.insert(PENDING_TXIDS_KEY, encode_txid_list(&txids))?;
+        Ok(())
+    }
+
+    pub fn load_pending_txids(&self) -> Result<Vec<Txid>> {
+        let Some(raw) = self.meta.get(PENDING_TXIDS_KEY)? else {
+            return Ok(Vec::new());
+        };
+        decode_txid_list(raw.as_ref())
     }
 
     pub fn store_output(
@@ -416,4 +441,26 @@ fn parse_journal_action(key: &[u8], value: &[u8]) -> Result<StoredJournalAction>
         kind,
         payload: value[1..].to_vec(),
     })
+}
+
+fn encode_txid_list(txids: &[Txid]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(txids.len() * 32);
+    for txid in txids {
+        out.extend_from_slice(txid.as_byte_array());
+    }
+    out
+}
+
+fn decode_txid_list(raw: &[u8]) -> Result<Vec<Txid>> {
+    if raw.len() % 32 != 0 {
+        anyhow::bail!("invalid pending txid list length: {}", raw.len());
+    }
+    let mut out = Vec::with_capacity(raw.len() / 32);
+    for chunk in raw.chunks_exact(32) {
+        let bytes: [u8; 32] = chunk
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid pending txid chunk"))?;
+        out.push(Txid::from_byte_array(bytes));
+    }
+    Ok(out)
 }
