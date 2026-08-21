@@ -1569,8 +1569,12 @@ mod tests {
                 script_pubkey: child_script.clone(),
             }],
         };
-        indexer.track_pending_transaction(&parent).expect("track parent");
-        indexer.track_pending_transaction(&child).expect("track child");
+        indexer
+            .track_pending_transaction(&parent)
+            .expect("track parent");
+        indexer
+            .track_pending_transaction(&child)
+            .expect("track child");
 
         apply_tx_status_change(
             &indexer,
