@@ -139,8 +139,8 @@ cargo test --test e2e_regtest -- --ignored
 ## Known limitations
 
 * **Partial mempool balance** — locally broadcast transactions and nakamoto tx
-  status changes are tracked as pending, but full peer-observed mempool
-  modeling is still incomplete.
+  status changes are tracked as pending and restored after restart, but full
+  peer-observed mempool modeling is still incomplete.
 * **Mempool view** — `blockchain.scripthash.get_mempool` exposes the pending
   transactions currently known to the bridge, including an estimated fee and
   whether the transaction spends any unconfirmed inputs.
