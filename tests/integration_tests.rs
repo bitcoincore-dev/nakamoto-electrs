@@ -928,7 +928,10 @@ fn electrum_scripthash_subscribe_updates_on_mempool_chain_changes() {
     let first_note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(first_note["method"], "blockchain.scripthash.subscribe");
     assert_eq!(first_note["params"][0], serde_json::json!(sh_a.to_hex()));
-    let first_status = first_note["params"][1].as_str().expect("status string").to_owned();
+    let first_status = first_note["params"][1]
+        .as_str()
+        .expect("status string")
+        .to_owned();
 
     line.clear();
     while line.is_empty() {
@@ -942,7 +945,10 @@ fn electrum_scripthash_subscribe_updates_on_mempool_chain_changes() {
         }
     }
     let first_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(first_resp["result"], serde_json::json!(first_txid.to_string()));
+    assert_eq!(
+        first_resp["result"],
+        serde_json::json!(first_txid.to_string())
+    );
 
     let second = mock::make_spend_tx(
         bitcoin::OutPoint::new(first_txid, 0),
@@ -1043,7 +1049,10 @@ fn electrum_scripthash_get_mempool_returns_pending_transaction() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while indexer.tip_height() < 1 {
-        assert!(std::time::Instant::now() < deadline, "timed out waiting for indexed block");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for indexed block"
+        );
         thread::sleep(Duration::from_millis(50));
     }
 
@@ -1051,7 +1060,9 @@ fn electrum_scripthash_get_mempool_returns_pending_transaction() {
     let raw = hex::encode(bitcoin::consensus::encode::serialize(&tx));
 
     let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     write!(
         stream,
@@ -1064,9 +1075,13 @@ fn electrum_scripthash_get_mempool_returns_pending_transaction() {
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     let broadcast: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(broadcast["result"], serde_json::json!(tx.compute_txid().to_string()));
+    assert_eq!(
+        broadcast["result"],
+        serde_json::json!(tx.compute_txid().to_string())
+    );
 
-    let mut mempool_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    let mut mempool_stream =
+        TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     mempool_stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -1286,7 +1301,9 @@ fn electrum_scripthash_get_mempool_marks_pending_ancestor_as_unconfirmed() {
     let first_txid = first.compute_txid();
 
     let mut tx_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    tx_stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    tx_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut tx_reader = BufReader::new(tx_stream.try_clone().unwrap());
     write!(
         tx_stream,
@@ -1303,14 +1320,20 @@ fn electrum_scripthash_get_mempool_marks_pending_ancestor_as_unconfirmed() {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for first broadcast");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for first broadcast"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read first broadcast: {err}"),
         }
     }
     let first_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(first_resp["result"], serde_json::json!(first_txid.to_string()));
+    assert_eq!(
+        first_resp["result"],
+        serde_json::json!(first_txid.to_string())
+    );
 
     let second = mock::make_spend_tx(
         bitcoin::OutPoint::new(first_txid, 0),
@@ -1337,17 +1360,24 @@ fn electrum_scripthash_get_mempool_marks_pending_ancestor_as_unconfirmed() {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for second broadcast");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for second broadcast"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read second broadcast: {err}"),
         }
     }
     let second_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(second_resp["result"], serde_json::json!(second_txid.to_string()));
+    assert_eq!(
+        second_resp["result"],
+        serde_json::json!(second_txid.to_string())
+    );
 
     let sh = sh_of(&mock::op_return_script(0x53));
-    let mut mempool_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    let mut mempool_stream =
+        TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     mempool_stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -1366,7 +1396,10 @@ fn electrum_scripthash_get_mempool_marks_pending_ancestor_as_unconfirmed() {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for mempool response");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for mempool response"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read mempool response: {err}"),

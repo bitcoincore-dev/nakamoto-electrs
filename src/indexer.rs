@@ -272,10 +272,9 @@ impl IndexState {
                     has_unconfirmed_input = true;
                 }
             }
-            let output_value = tx
-                .output
-                .iter()
-                .fold(0u64, |acc, output| acc.saturating_add(output.value.to_sat()));
+            let output_value = tx.output.iter().fold(0u64, |acc, output| {
+                acc.saturating_add(output.value.to_sat())
+            });
             out.push(MempoolEntry {
                 txid,
                 height: if has_unconfirmed_input { -1 } else { 0 },
