@@ -1412,7 +1412,7 @@ mod tests {
     }
 
     #[test]
-    fn tx_status_unconfirmed_is_ignored_and_acknowledged_by_peer_is_noop() {
+    fn tx_status_unconfirmed_is_ignored_and_acknowledged_by_peer_records_seen_state() {
         let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
             .expect("indexer");
         let broadcaster = PendingChangeBroadcaster::default();
