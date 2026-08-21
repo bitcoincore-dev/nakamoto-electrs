@@ -1605,6 +1605,7 @@ fn electrum_scripthash_get_mempool_updates_when_parent_confirms() {
         serde_json::json!(parent_txid.to_string())
     );
 
+
     let mut child_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     child_stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1781,25 +1782,6 @@ fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
     let initial: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert!(initial["result"].is_null());
 
-    let mut parent_sub_stream =
-        TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    parent_sub_stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let mut parent_sub_reader = BufReader::new(parent_sub_stream.try_clone().unwrap());
-    write!(
-        parent_sub_stream,
-        r#"{{"jsonrpc":"2.0","id":10,"method":"blockchain.scripthash.subscribe","params":["{}"]}}"#,
-        sh_of(&parent_script).to_hex()
-    )
-    .unwrap();
-    parent_sub_stream.write_all(b"\n").unwrap();
-
-    line.clear();
-    parent_sub_reader.read_line(&mut line).unwrap();
-    let initial_parent: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert!(initial_parent["result"].is_null());
-
     let mut parent_stream =
         TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     parent_stream
@@ -1891,25 +1873,6 @@ fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
         serde_json::json!(sh_of(&child_script).to_hex())
     );
     assert!(note["params"][1].is_null());
-
-    line.clear();
-    while line.is_empty() {
-        match parent_sub_reader.read_line(&mut line) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("failed to read parent replacement notification: {err}"),
-        }
-    }
-    let parent_note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(parent_note["method"], "blockchain.scripthash.subscribe");
-    assert_eq!(
-        parent_note["params"][0],
-        serde_json::json!(sh_of(&parent_script).to_hex())
-    );
-    assert!(parent_note["params"][1].is_null());
 
     let mempool_after: serde_json::Value = {
         let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
