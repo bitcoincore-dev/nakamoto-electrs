@@ -513,7 +513,10 @@ mod tests {
             &self,
             hash: &NkBlockHash,
         ) -> Result<Option<(u64, BlockHeader)>, nakamoto_client::handle::Error> {
-            Ok(self.tree.get_block(hash).map(|(height, header)| (height, *header)))
+            Ok(self
+                .tree
+                .get_block(hash)
+                .map(|(height, header)| (height, *header)))
         }
 
         fn get_block_by_height(
@@ -523,10 +526,7 @@ mod tests {
             Ok(self.tree.get_block_by_height(height).copied())
         }
 
-        fn request_block(
-            &self,
-            hash: &NkBlockHash,
-        ) -> Result<(), nakamoto_client::handle::Error> {
+        fn request_block(&self, hash: &NkBlockHash) -> Result<(), nakamoto_client::handle::Error> {
             self.requested_blocks.lock().unwrap().push(*hash);
             Ok(())
         }

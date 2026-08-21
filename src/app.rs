@@ -474,7 +474,8 @@ mod tests {
         fn get_block_by_height(
             &self,
             _height: nakamoto_common::block::Height,
-        ) -> Result<Option<nakamoto_common::block::BlockHeader>, nakamoto_client::handle::Error> {
+        ) -> Result<Option<nakamoto_common::block::BlockHeader>, nakamoto_client::handle::Error>
+        {
             unreachable!()
         }
         fn request_block(

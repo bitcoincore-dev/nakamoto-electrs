@@ -1584,7 +1584,10 @@ fn electrum_scripthash_get_mempool_returns_sorted_entries_and_unknown_prevout_fe
         .track_pending_transaction(&second)
         .expect("track second pending");
 
-    let mut expected = [first.compute_txid().to_string(), second.compute_txid().to_string()];
+    let mut expected = [
+        first.compute_txid().to_string(),
+        second.compute_txid().to_string(),
+    ];
     expected.sort();
 
     let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
@@ -1836,7 +1839,6 @@ fn electrum_scripthash_get_mempool_updates_when_parent_confirms() {
         parent_resp["result"],
         serde_json::json!(parent_txid.to_string())
     );
-
 
     let mut child_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     child_stream
@@ -2199,7 +2201,9 @@ fn electrum_scripthash_get_mempool_updates_on_deep_chain_replacement() {
         (3u64, grandchild.clone()),
     ] {
         let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         write!(
             stream,
@@ -2222,7 +2226,10 @@ fn electrum_scripthash_get_mempool_updates_on_deep_chain_replacement() {
             }
         }
         let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(resp["result"], serde_json::json!(tx.compute_txid().to_string()));
+        assert_eq!(
+            resp["result"],
+            serde_json::json!(tx.compute_txid().to_string())
+        );
     }
 
     let mut sub_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();

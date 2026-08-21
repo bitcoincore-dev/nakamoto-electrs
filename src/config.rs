@@ -323,13 +323,23 @@ mod tests {
 
     #[test]
     fn nakamoto_config_new_has_correct_network() {
-        assert_eq!(NakamotoConfig::new(Network::Mainnet).network, Network::Mainnet);
-        assert_eq!(NakamotoConfig::new(Network::Signet).network, Network::Signet);
+        assert_eq!(
+            NakamotoConfig::new(Network::Mainnet).network,
+            Network::Mainnet
+        );
+        assert_eq!(
+            NakamotoConfig::new(Network::Signet).network,
+            Network::Signet
+        );
     }
 
     #[test]
     fn nakamoto_config_new_has_empty_peers() {
-        assert!(NakamotoConfig::new(Network::Testnet).nakamoto_peers.is_empty());
+        assert!(
+            NakamotoConfig::new(Network::Testnet)
+                .nakamoto_peers
+                .is_empty()
+        );
     }
 
     #[test]
@@ -366,8 +376,10 @@ mod tests {
     fn cli_custom_listen_address_is_used() {
         let cli = Cli::parse_from([
             "nakamoto-electrs",
-            "--network", "regtest",
-            "--listen", "127.0.0.1:19999",
+            "--network",
+            "regtest",
+            "--listen",
+            "127.0.0.1:19999",
         ]);
         match cli.into_mode() {
             Mode::Bridge(cfg) => assert_eq!(cfg.electrum_listen_addr.port(), 19999),
@@ -379,9 +391,12 @@ mod tests {
     fn cli_custom_peers_are_forwarded() {
         let cli = Cli::parse_from([
             "nakamoto-electrs",
-            "--network", "regtest",
-            "--peer", "127.0.0.1:18444",
-            "--peer", "127.0.0.1:18445",
+            "--network",
+            "regtest",
+            "--peer",
+            "127.0.0.1:18444",
+            "--peer",
+            "127.0.0.1:18445",
         ]);
         match cli.into_mode() {
             Mode::Bridge(cfg) => assert_eq!(cfg.nakamoto_peers.len(), 2),

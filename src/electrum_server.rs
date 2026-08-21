@@ -1420,7 +1420,9 @@ mod tests {
                 script_pubkey: child_script.clone(),
             }],
         };
-        indexer.track_pending_transaction(&child).expect("track child");
+        indexer
+            .track_pending_transaction(&child)
+            .expect("track child");
 
         let sh = ScriptHash::from_script(&child_script);
         let resp = handle_scripthash_get_mempool(&json!([sh.to_hex()]), &indexer).expect("mempool");
@@ -2154,7 +2156,11 @@ mod tests {
     #[test]
     fn compute_status_hash_non_empty_returns_some() {
         let txid = "0".repeat(64).parse().unwrap();
-        let history = vec![crate::indexer::TxEntry { txid, height: 1, sequence: 0 }];
+        let history = vec![crate::indexer::TxEntry {
+            txid,
+            height: 1,
+            sequence: 0,
+        }];
         assert!(compute_status_hash(&history, &[]).is_some());
     }
 
@@ -2178,14 +2184,22 @@ mod tests {
 
         struct FakeSource;
         impl BlockSource for FakeSource {
-            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
+            fn subscribe(&self) -> Receiver<BlockEvent> {
+                crossbeam_channel::never()
+            }
             fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
                 Ok((0, bitcoin::BlockHash::all_zeros()))
             }
-            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+            fn block_header(
+                &self,
+                _h: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
                 Ok(None)
             }
-            fn block_by_hash(&self, _hash: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> {
+            fn block_by_hash(
+                &self,
+                _hash: &bitcoin::BlockHash,
+            ) -> anyhow::Result<Option<bitcoin::Block>> {
                 Ok(None)
             }
         }
@@ -2196,8 +2210,20 @@ mod tests {
         let fee_rate = Arc::new(FeeRateState::new());
         let pending = PendingChangeBroadcaster::default();
         let raw = r#"{"jsonrpc":"2.0","id":99,"method":"totally.unknown","params":[]}"#;
-        let resp = dispatch_request(raw, &mut state, &indexer, &FakeSource, &Metrics::new(), None, &fee_rate, &pending);
-        assert!(resp.get("error").is_some(), "expected error field in {resp}");
+        let resp = dispatch_request(
+            raw,
+            &mut state,
+            &indexer,
+            &FakeSource,
+            &Metrics::new(),
+            None,
+            &fee_rate,
+            &pending,
+        );
+        assert!(
+            resp.get("error").is_some(),
+            "expected error field in {resp}"
+        );
         assert_eq!(resp["id"], json!(99));
     }
 
@@ -2210,10 +2236,24 @@ mod tests {
 
         struct FakeSource;
         impl BlockSource for FakeSource {
-            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
-            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> { Ok((0, bitcoin::BlockHash::all_zeros())) }
-            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> { Ok(None) }
-            fn block_by_hash(&self, _: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> { Ok(None) }
+            fn subscribe(&self) -> Receiver<BlockEvent> {
+                crossbeam_channel::never()
+            }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                Ok((0, bitcoin::BlockHash::all_zeros()))
+            }
+            fn block_header(
+                &self,
+                _h: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(None)
+            }
+            fn block_by_hash(
+                &self,
+                _: &bitcoin::BlockHash,
+            ) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
         }
 
         assert!(handle_block_headers(&json!([]), &FakeSource).is_err());
@@ -2226,10 +2266,24 @@ mod tests {
 
         struct FakeSource;
         impl BlockSource for FakeSource {
-            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
-            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> { Ok((0, bitcoin::BlockHash::all_zeros())) }
-            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> { Ok(None) }
-            fn block_by_hash(&self, _: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> { Ok(None) }
+            fn subscribe(&self) -> Receiver<BlockEvent> {
+                crossbeam_channel::never()
+            }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                Ok((0, bitcoin::BlockHash::all_zeros()))
+            }
+            fn block_header(
+                &self,
+                _h: u32,
+            ) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(None)
+            }
+            fn block_by_hash(
+                &self,
+                _: &bitcoin::BlockHash,
+            ) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
         }
 
         assert!(handle_block_headers(&json!([0]), &FakeSource).is_err());
@@ -2266,7 +2320,9 @@ mod tests {
 
         struct NopBroadcaster;
         impl TransactionBroadcaster for NopBroadcaster {
-            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> { Ok(()) }
+            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> {
+                Ok(())
+            }
         }
 
         let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(NopBroadcaster);
@@ -2289,7 +2345,9 @@ mod tests {
 
         struct NopBroadcaster;
         impl TransactionBroadcaster for NopBroadcaster {
-            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> { Ok(()) }
+            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> {
+                Ok(())
+            }
         }
 
         let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(NopBroadcaster);
