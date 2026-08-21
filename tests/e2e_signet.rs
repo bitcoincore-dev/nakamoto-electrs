@@ -11,8 +11,8 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -126,7 +126,10 @@ fn e2e_headers_subscribe_returns_tip() {
         "result missing 'height' field: {resp}"
     );
     let height = result["height"].as_u64().expect("height must be a number");
-    assert_eq!(height, 0, "stub source should report height 0, got {height}");
+    assert_eq!(
+        height, 0,
+        "stub source should report height 0, got {height}"
+    );
 }
 
 #[test]
