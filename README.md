@@ -140,9 +140,9 @@ cargo test --test e2e_regtest -- --ignored
 
 * **Local mempool model** — locally broadcast transactions and nakamoto tx
   status changes are tracked as pending, restored after restart, and updated on
-  confirmation/replacement; peer acknowledgements are recorded separately but do
-  not change pending state, and full peer-observed mempool modeling is still
-  incomplete.
+  confirmation/replacement; peer acknowledgements are recorded separately,
+  pruned on confirmation, and do not change pending state, and full
+  peer-observed mempool modeling is still incomplete.
 * **Mempool view** — `blockchain.scripthash.get_mempool` exposes the pending
   transactions currently known to the bridge, including an estimated fee and
   whether the transaction spends any unconfirmed inputs.
