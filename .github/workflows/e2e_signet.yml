@@ -180,6 +180,22 @@ jobs:
 
           bitcoind -signet -datadir="$HOME/.bitcoin-stable"
           echo "Stable bitcoind started."
+          for i in $(seq 1 30); do
+            if bitcoin-cli -signet \
+                -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+                -rpcport=38332 getblockchaininfo > /dev/null 2>&1; then
+              echo "Stable bitcoind RPC ready (attempt ${i})"
+              break
+            fi
+            echo "Waiting for stable bitcoind RPC... (${i}/30)"
+            sleep 1
+          done
+          if ! bitcoin-cli -signet \
+              -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
+              -rpcport=38332 getblockchaininfo > /dev/null 2>&1; then
+            echo "Stable bitcoind RPC did not become ready before RC start" >&2
+            exit 1
+          fi
 
           mkdir -p "$HOME/.bitcoin-rc"
           printf '%s\n' \
