@@ -145,14 +145,16 @@ impl PersistentIndex {
         if !txids.iter().any(|existing| existing == &txid) {
             txids.push(txid);
         }
-        self.meta.insert(PENDING_TXIDS_KEY, encode_txid_list(&txids))?;
+        self.meta
+            .insert(PENDING_TXIDS_KEY, encode_txid_list(&txids))?;
         Ok(())
     }
 
     pub fn delete_pending_txid(&self, txid: &Txid) -> Result<()> {
         let mut txids = self.load_pending_txids()?;
         txids.retain(|existing| existing != txid);
-        self.meta.insert(PENDING_TXIDS_KEY, encode_txid_list(&txids))?;
+        self.meta
+            .insert(PENDING_TXIDS_KEY, encode_txid_list(&txids))?;
         Ok(())
     }
 
