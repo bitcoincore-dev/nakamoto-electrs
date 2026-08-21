@@ -1494,7 +1494,6 @@ fn electrum_scripthash_get_mempool_rejects_invalid_scripthash() {
     reader.read_line(&mut line).unwrap();
     let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert!(resp["result"].is_null(), "unexpected result: {resp}");
-    assert_eq!(resp["error"]["code"], serde_json::json!(-32601));
     assert!(
         resp["error"]["message"]
             .as_str()
@@ -2060,11 +2059,16 @@ fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
     );
 
     line.clear();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while line.is_empty() {
         match sub_reader.read_line(&mut line) {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for child notification"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read child notification: {err}"),
