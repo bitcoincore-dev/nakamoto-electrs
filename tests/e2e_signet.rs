@@ -337,7 +337,7 @@ fn e2e_fee_histogram_returns_array() {
 
 #[test]
 #[ignore = "requires external bitcoind -signet; run with --ignored"]
-fn e2e_relayfee_returns_positive_value() {
+fn e2e_relayfee_returns_nonnegative_value() {
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
     let datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
