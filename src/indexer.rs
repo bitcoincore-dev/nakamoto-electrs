@@ -1329,6 +1329,57 @@ mod tests {
     }
 
     #[test]
+    fn track_pending_transaction_replaces_deep_conflicting_chain() {
+        let mut state = make_state();
+        let fund_script = p2pkh_script();
+        let block = make_block(1, vec![fund_script.clone()]);
+        let fund_txid = block.txdata[0].compute_txid();
+        let fund_outpoint = OutPoint::new(fund_txid, 0);
+        state.apply_block(&block, 1).expect("apply fund");
+
+        let first = make_spend_block(2, fund_outpoint, vec![0x51])
+            .txdata
+            .into_iter()
+            .next()
+            .expect("first tx");
+        state
+            .track_pending_transaction_internal(&first)
+            .expect("track first");
+        let second = make_spend_block(3, OutPoint::new(first.compute_txid(), 0), vec![0x52])
+            .txdata
+            .into_iter()
+            .next()
+            .expect("second tx");
+        state
+            .track_pending_transaction_internal(&second)
+            .expect("track second");
+        let third = make_spend_block(4, OutPoint::new(second.compute_txid(), 0), vec![0x53])
+            .txdata
+            .into_iter()
+            .next()
+            .expect("third tx");
+        state
+            .track_pending_transaction_internal(&third)
+            .expect("track third");
+
+        let replacement = make_spend_block(5, fund_outpoint, vec![0x54])
+            .txdata
+            .into_iter()
+            .next()
+            .expect("replacement tx");
+        state
+            .track_pending_transaction_internal(&replacement)
+            .expect("track replacement");
+
+        for script in [0x51u8, 0x52, 0x53] {
+            let sh = ScriptHash::from_script(&Builder::from(vec![script]).into_script());
+            assert!(state.mempool(&sh).expect("mempool").is_empty());
+        }
+        let sh_replacement = ScriptHash::from_script(&Builder::from(vec![0x54u8]).into_script());
+        assert_eq!(state.mempool(&sh_replacement).expect("mempool repl").len(), 1);
+    }
+
+    #[test]
     fn restart_preserves_rollback_state() {
         let dir = tempfile::tempdir().expect("temp dir").keep();
         let mut state = IndexState::new(dir.clone()).expect("state");
