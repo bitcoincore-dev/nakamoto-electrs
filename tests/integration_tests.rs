@@ -1049,7 +1049,10 @@ fn electrum_scripthash_listunspent_hides_pending_spent_outputs() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while indexer.tip_height() < 1 {
-        assert!(std::time::Instant::now() < deadline, "timed out waiting for indexed block");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for indexed block"
+        );
         thread::sleep(Duration::from_millis(50));
     }
 
@@ -1057,7 +1060,9 @@ fn electrum_scripthash_listunspent_hides_pending_spent_outputs() {
     let raw = hex::encode(bitcoin::consensus::encode::serialize(&tx));
 
     let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     write!(
         stream,
@@ -1073,7 +1078,10 @@ fn electrum_scripthash_listunspent_hides_pending_spent_outputs() {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for broadcast response");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for broadcast response"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read broadcast response: {err}"),
@@ -1104,7 +1112,10 @@ fn electrum_scripthash_listunspent_hides_pending_spent_outputs() {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for listunspent response");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for listunspent response"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read listunspent response: {err}"),
