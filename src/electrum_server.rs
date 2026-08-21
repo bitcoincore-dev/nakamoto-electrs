@@ -1339,6 +1339,99 @@ mod tests {
     }
 
     #[test]
+    fn scripthash_get_mempool_reports_confirmed_input_fee() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let prevout = bitcoin::OutPoint::new("11".repeat(32).parse().expect("txid"), 0);
+        {
+            let store = crate::store::PersistentIndex::open(&dir).expect("open store");
+            store
+                .store_output(
+                    prevout,
+                    ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(vec![0x51])),
+                    1000,
+                    1,
+                )
+                .expect("store output");
+        }
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+
+        let target_script = bitcoin::ScriptBuf::from_bytes(vec![0x52]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: prevout,
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: target_script.clone(),
+            }],
+        };
+        indexer
+            .track_pending_transaction(&tx)
+            .expect("track pending");
+
+        let sh = ScriptHash::from_script(&target_script);
+        let resp = handle_scripthash_get_mempool(&json!([sh.to_hex()]), &indexer).expect("mempool");
+        let arr = resp.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["height"], json!(0));
+        assert_eq!(arr[0]["fee"], json!(100));
+        assert_eq!(arr[0]["tx_hash"], json!(tx.compute_txid().to_string()));
+    }
+
+    #[test]
+    fn scripthash_get_mempool_reports_height_minus_one_for_pending_parent() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let parent_script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let child_script = bitcoin::ScriptBuf::from_bytes(vec![0x52]);
+        let parent = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: parent_script,
+            }],
+        };
+        indexer
+            .track_pending_transaction(&parent)
+            .expect("track parent");
+        let child = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::new(parent.compute_txid(), 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: child_script.clone(),
+            }],
+        };
+        indexer.track_pending_transaction(&child).expect("track child");
+
+        let sh = ScriptHash::from_script(&child_script);
+        let resp = handle_scripthash_get_mempool(&json!([sh.to_hex()]), &indexer).expect("mempool");
+        let arr = resp.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["height"], json!(-1));
+        assert_eq!(arr[0]["fee"], json!(100));
+        assert_eq!(arr[0]["tx_hash"], json!(child.compute_txid().to_string()));
+    }
+
+    #[test]
     fn scripthash_listunspent_includes_pending_outputs() {
         let dir = tempfile::tempdir().expect("temp").keep();
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
@@ -2063,6 +2156,17 @@ mod tests {
         let txid = "0".repeat(64).parse().unwrap();
         let history = vec![crate::indexer::TxEntry { txid, height: 1, sequence: 0 }];
         assert!(compute_status_hash(&history, &[]).is_some());
+    }
+
+    #[test]
+    fn compute_status_hash_mempool_only_returns_some() {
+        let txid = "1".repeat(64).parse().unwrap();
+        let mempool = vec![crate::indexer::MempoolEntry {
+            txid,
+            height: 0,
+            fee: 10,
+        }];
+        assert!(compute_status_hash(&[], &mempool).is_some());
     }
 
     // ---- dispatch_request: unknown method ---------------------------------
