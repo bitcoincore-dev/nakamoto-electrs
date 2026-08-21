@@ -2096,11 +2096,16 @@ fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
     repl_stream.write_all(b"\n").unwrap();
 
     line.clear();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while line.is_empty() {
         match sub_reader.read_line(&mut line) {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for replacement notification"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read replacement notification: {err}"),
