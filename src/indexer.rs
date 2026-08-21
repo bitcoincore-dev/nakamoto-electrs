@@ -127,7 +127,9 @@ impl IndexState {
             store,
         };
         state.load_history_from_store()?;
-        state.load_journal_from_store()?;
+        let confirmed_txids = state.load_journal_from_store()?;
+        state.load_pending_from_store(&confirmed_txids)?;
+        state.rebuild_pending_view();
         Ok(state)
     }
 
@@ -145,11 +147,16 @@ impl IndexState {
         Ok(())
     }
 
-    fn load_journal_from_store(&mut self) -> Result<()> {
+    fn load_journal_from_store(&mut self) -> Result<std::collections::HashSet<Txid>> {
+        let mut confirmed_txids = std::collections::HashSet::new();
         for action in self.store.load_journal_actions()? {
             let entry = match action.kind {
                 JournalActionKind::Tx => BlockAction::Tx {
-                    txid: parse_txid(&action.payload)?,
+                    txid: {
+                        let txid = parse_txid(&action.payload)?;
+                        confirmed_txids.insert(txid);
+                        txid
+                    },
                     journal_key: action.journal_key,
                 },
                 JournalActionKind::History => BlockAction::History {
@@ -169,6 +176,21 @@ impl IndexState {
         }
         for actions in self.by_height.values_mut() {
             actions.sort_by_key(action_sequence);
+        }
+        Ok(confirmed_txids)
+    }
+
+    fn load_pending_from_store(
+        &mut self,
+        confirmed_txids: &std::collections::HashSet<Txid>,
+    ) -> Result<()> {
+        for txid in self.store.load_pending_txids()? {
+            if confirmed_txids.contains(&txid) {
+                continue;
+            }
+            if let Some(tx) = self.store.load_tx(&txid)? {
+                self.pending_txs.insert(txid, tx);
+            }
         }
         Ok(())
     }
@@ -212,6 +234,7 @@ impl IndexState {
     fn track_pending_transaction_internal(&mut self, tx: &Transaction) -> Result<()> {
         let txid = tx.compute_txid();
         self.store.store_tx(tx)?;
+        self.store.store_pending_txid(txid)?;
         self.pending_txs.insert(txid, tx.clone());
         self.rebuild_pending_view();
         Ok(())
@@ -219,6 +242,7 @@ impl IndexState {
 
     fn forget_pending_transaction_internal(&mut self, txid: &Txid) {
         self.pending_txs.remove(txid);
+        let _ = self.store.delete_pending_txid(txid);
         self.rebuild_pending_view();
     }
 
@@ -807,6 +831,7 @@ impl Indexer {
             return Ok(None);
         };
         let affected = state.pending_affected_scripts_for_tx(&tx);
+        let _ = state.store.delete_pending_txid(txid);
         state.rebuild_pending_view();
         Ok(Some(affected))
     }
@@ -1163,6 +1188,54 @@ mod tests {
         reopened.rollback_height(2).expect("rollback after restart");
         assert_eq!(reopened.get_balance(&sh).unwrap(), 1000);
         assert_eq!(reopened.get_history(&sh).len(), 1);
+    }
+
+    #[test]
+    fn restart_restores_pending_transactions() {
+        let dir = tempfile::tempdir().expect("temp dir").keep();
+        let reopen_dir = dir.clone();
+        let mut state = IndexState::new(dir.clone()).expect("state");
+
+        let script = p2pkh_script();
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: Builder::from(script.clone()).into_script(),
+            }],
+        };
+        let sh = ScriptHash::from_script(&Builder::from(script).into_script());
+        state
+            .track_pending_transaction_internal(&tx)
+            .expect("track pending");
+        assert_eq!(state.mempool(&sh).expect("mempool").len(), 1);
+        assert_eq!(state.store.load_pending_txids().expect("pending ids").len(), 1);
+        drop(state);
+
+        let reopened = IndexState::new(dir).expect("reopen");
+        assert_eq!(reopened.store.load_pending_txids().expect("pending ids").len(), 1);
+        assert_eq!(reopened.pending_txs.len(), 1);
+        assert_eq!(reopened.pending_outputs.len(), 1);
+        let mempool = reopened.mempool(&sh).expect("mempool after restart");
+        assert_eq!(mempool.len(), 1);
+        assert_eq!(mempool[0].height, 0);
+        assert_eq!(mempool[0].fee, 0);
+        assert_eq!(reopened.pending_unspent_for_script(&sh).len(), 1);
+        drop(reopened);
+        let reopened_indexer = Indexer::new(reopen_dir, Metrics::new()).expect("reopen indexer");
+        let unspent = reopened_indexer
+            .list_unspent(&sh)
+            .expect("unspent after restart");
+        assert_eq!(unspent.len(), 1);
+        assert_eq!(unspent[0].height, 0);
+        assert_eq!(unspent[0].value, 900);
     }
 
     #[test]
