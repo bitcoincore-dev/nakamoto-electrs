@@ -101,7 +101,11 @@ fn apply_tx_status_kind(
         TxStatusKind::Reverted => indexer.restore_pending_transaction(txid)?,
         TxStatusKind::Confirmed => indexer.forget_pending_transaction(txid)?,
         TxStatusKind::Stale => indexer.forget_pending_transaction_chain(txid)?,
-        TxStatusKind::Acknowledged | TxStatusKind::Other => None,
+        TxStatusKind::Acknowledged => {
+            indexer.record_peer_acknowledgement(txid)?;
+            None
+        }
+        TxStatusKind::Other => None,
     };
 
     if let Some(affected) = affected {
@@ -1449,9 +1453,10 @@ mod tests {
             &txid.to_string(),
             "transaction was acknowledged by peer 127.0.0.1:8333",
         )
-        .expect("noop");
+        .expect("record peer seen");
 
         assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
+        assert!(indexer.has_peer_seen_txid(&txid));
         assert!(rx.try_recv().is_err());
     }
 

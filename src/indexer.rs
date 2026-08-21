@@ -90,6 +90,7 @@ struct IndexState {
     by_height: HashMap<u32, Vec<BlockAction>>,
     pending_txs: HashMap<Txid, Transaction>,
     pending_outputs: HashMap<OutPoint, StoredOutput>,
+    peer_seen_txs: std::collections::HashSet<Txid>,
     tip_height: u32,
     store: PersistentIndex,
 }
@@ -123,11 +124,13 @@ impl IndexState {
             by_height: HashMap::new(),
             pending_txs: HashMap::new(),
             pending_outputs: HashMap::new(),
+            peer_seen_txs: std::collections::HashSet::new(),
             tip_height,
             store,
         };
         state.load_history_from_store()?;
         let confirmed_txids = state.load_journal_from_store()?;
+        state.load_peer_seen_from_store()?;
         state.load_pending_from_store(&confirmed_txids)?;
         state.rebuild_pending_view();
         Ok(state)
@@ -195,6 +198,15 @@ impl IndexState {
         Ok(())
     }
 
+    fn load_peer_seen_from_store(&mut self) -> Result<()> {
+        self.peer_seen_txs = self
+            .store
+            .load_peer_seen_txids()?
+            .into_iter()
+            .collect();
+        Ok(())
+    }
+
     fn rebuild_pending_view(&mut self) {
         use std::collections::HashSet;
 
@@ -250,6 +262,8 @@ impl IndexState {
     fn forget_pending_transaction_internal(&mut self, txid: &Txid) {
         self.pending_txs.remove(txid);
         let _ = self.store.delete_pending_txid(txid);
+        self.peer_seen_txs.remove(txid);
+        let _ = self.store.delete_peer_seen_txid(txid);
         self.rebuild_pending_view();
     }
 
@@ -287,10 +301,11 @@ impl IndexState {
                 queue.push_back(descendant);
             }
         }
-
         for txid in &removed {
             self.pending_txs.remove(txid);
             let _ = self.store.delete_pending_txid(txid);
+            self.peer_seen_txs.remove(txid);
+            let _ = self.store.delete_peer_seen_txid(txid);
         }
         self.rebuild_pending_view();
         affected.into_iter().collect()
@@ -723,6 +738,11 @@ impl IndexState {
         self.store.store_tx(tx)
     }
 
+    fn record_peer_acknowledgement(&mut self, txid: &Txid) -> Result<()> {
+        self.peer_seen_txs.insert(*txid);
+        self.store.store_peer_seen_txid(*txid)
+    }
+
     fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.store.balance_for_script(sh)
     }
@@ -909,6 +929,21 @@ impl Indexer {
             .read()
             .expect("index read lock poisoned")
             .store_transaction(tx)
+    }
+
+    pub fn record_peer_acknowledgement(&self, txid: &Txid) -> Result<()> {
+        self.state
+            .write()
+            .expect("index write lock poisoned")
+            .record_peer_acknowledgement(txid)
+    }
+
+    pub fn has_peer_seen_txid(&self, txid: &Txid) -> bool {
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .peer_seen_txs
+            .contains(txid)
     }
 
     pub fn track_pending_transaction(&self, tx: &Transaction) -> Result<Vec<ScriptHash>> {
@@ -1461,6 +1496,23 @@ mod tests {
         assert_eq!(unspent.len(), 1);
         assert_eq!(unspent[0].height, 0);
         assert_eq!(unspent[0].value, 900);
+    }
+
+    #[test]
+    fn peer_seen_transactions_persist_across_restart() {
+        let dir = tempfile::tempdir().expect("temp dir").keep();
+        let txid = bitcoin::Txid::all_zeros();
+
+        {
+            let indexer = Indexer::new(dir.clone(), Metrics::new()).expect("indexer");
+            indexer
+                .record_peer_acknowledgement(&txid)
+                .expect("record ack");
+            assert!(indexer.has_peer_seen_txid(&txid));
+        }
+
+        let reopened = Indexer::new(dir, Metrics::new()).expect("reopen");
+        assert!(reopened.has_peer_seen_txid(&txid));
     }
 
     #[test]

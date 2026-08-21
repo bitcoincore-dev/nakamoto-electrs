@@ -11,6 +11,7 @@ use sled::Tree;
 use crate::indexer::{ScriptHash, TxEntry};
 
 const PENDING_TXIDS_KEY: &[u8] = b"pending_txids";
+const PEER_SEEN_TXIDS_KEY: &[u8] = b"peer_seen_txids";
 
 #[derive(Clone)]
 pub struct PersistentIndex {
@@ -160,6 +161,31 @@ impl PersistentIndex {
 
     pub fn load_pending_txids(&self) -> Result<Vec<Txid>> {
         let Some(raw) = self.meta.get(PENDING_TXIDS_KEY)? else {
+            return Ok(Vec::new());
+        };
+        decode_txid_list(raw.as_ref())
+    }
+
+    pub fn store_peer_seen_txid(&self, txid: Txid) -> Result<()> {
+        let mut txids = self.load_peer_seen_txids()?;
+        if !txids.iter().any(|existing| existing == &txid) {
+            txids.push(txid);
+        }
+        self.meta
+            .insert(PEER_SEEN_TXIDS_KEY, encode_txid_list(&txids))?;
+        Ok(())
+    }
+
+    pub fn delete_peer_seen_txid(&self, txid: &Txid) -> Result<()> {
+        let mut txids = self.load_peer_seen_txids()?;
+        txids.retain(|existing| existing != txid);
+        self.meta
+            .insert(PEER_SEEN_TXIDS_KEY, encode_txid_list(&txids))?;
+        Ok(())
+    }
+
+    pub fn load_peer_seen_txids(&self) -> Result<Vec<Txid>> {
+        let Some(raw) = self.meta.get(PEER_SEEN_TXIDS_KEY)? else {
             return Ok(Vec::new());
         };
         decode_txid_list(raw.as_ref())
