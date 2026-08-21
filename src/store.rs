@@ -466,3 +466,419 @@ fn decode_txid_list(raw: &[u8]) -> Result<Vec<Txid>> {
     }
     Ok(out)
 }
+
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoin::{
+        absolute::LockTime,
+        blockdata::transaction::{TxIn, TxOut, Version},
+    };
+
+    fn make_store() -> PersistentIndex {
+        let dir = tempfile::tempdir().expect("temp dir").keep();
+        PersistentIndex::open(dir).expect("open store")
+    }
+
+    fn make_txid(b: u8) -> Txid {
+        Txid::from_byte_array([b; 32])
+    }
+
+    fn make_script_hash(b: u8) -> ScriptHash {
+        ScriptHash::from_raw_bytes([b; 32])
+    }
+
+    fn make_tx() -> Transaction {
+        Transaction {
+            version: Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        }
+    }
+
+    // ---- tip height -------------------------------------------------------
+
+    #[test]
+    fn tip_height_is_zero_when_unset() {
+        assert_eq!(make_store().tip_height(), 0);
+    }
+
+    #[test]
+    fn tip_height_round_trips() {
+        let store = make_store();
+        store.set_tip_height(42).expect("set");
+        assert_eq!(store.tip_height(), 42);
+    }
+
+    #[test]
+    fn tip_height_can_be_overwritten() {
+        let store = make_store();
+        store.set_tip_height(1).expect("set 1");
+        store.set_tip_height(100).expect("set 100");
+        assert_eq!(store.tip_height(), 100);
+    }
+
+    // ---- store_tx / load_tx / delete_tx -----------------------------------
+
+    #[test]
+    fn store_and_load_tx_round_trip() {
+        let store = make_store();
+        let tx = make_tx();
+        let txid = tx.compute_txid();
+        store.store_tx(&tx).expect("store");
+        let loaded = store.load_tx(&txid).expect("load").expect("found");
+        assert_eq!(loaded.compute_txid(), txid);
+    }
+
+    #[test]
+    fn load_tx_returns_none_for_unknown_txid() {
+        let store = make_store();
+        assert!(store.load_tx(&make_txid(0xff)).expect("load").is_none());
+    }
+
+    #[test]
+    fn delete_tx_removes_entry() {
+        let store = make_store();
+        let tx = make_tx();
+        let txid = tx.compute_txid();
+        store.store_tx(&tx).expect("store");
+        store.delete_tx(&txid).expect("delete");
+        assert!(store.load_tx(&txid).expect("load after delete").is_none());
+    }
+
+    // ---- pending txids ----------------------------------------------------
+
+    #[test]
+    fn load_pending_txids_empty_by_default() {
+        assert!(make_store().load_pending_txids().expect("load").is_empty());
+    }
+
+    #[test]
+    fn store_and_load_pending_txid_round_trip() {
+        let store = make_store();
+        let txid = make_txid(0x01);
+        store.store_pending_txid(txid).expect("store");
+        let ids = store.load_pending_txids().expect("load");
+        assert_eq!(ids, vec![txid]);
+    }
+
+    #[test]
+    fn store_pending_txid_deduplicates() {
+        let store = make_store();
+        let txid = make_txid(0x01);
+        store.store_pending_txid(txid).expect("store 1");
+        store.store_pending_txid(txid).expect("store 2");
+        assert_eq!(store.load_pending_txids().expect("load").len(), 1);
+    }
+
+    #[test]
+    fn delete_pending_txid_removes_entry() {
+        let store = make_store();
+        let txid = make_txid(0x01);
+        store.store_pending_txid(txid).expect("store");
+        store.delete_pending_txid(&txid).expect("delete");
+        assert!(store.load_pending_txids().expect("load").is_empty());
+    }
+
+    #[test]
+    fn pending_txid_list_preserves_order() {
+        let store = make_store();
+        let ids: Vec<Txid> = (1u8..=3).map(make_txid).collect();
+        for &id in &ids {
+            store.store_pending_txid(id).expect("store");
+        }
+        assert_eq!(store.load_pending_txids().expect("load"), ids);
+    }
+
+    // ---- decode_txid_list error -------------------------------------------
+
+    #[test]
+    fn decode_txid_list_rejects_misaligned_data() {
+        assert!(decode_txid_list(&[0u8; 31]).is_err());
+        assert!(decode_txid_list(&[0u8; 33]).is_err());
+    }
+
+    #[test]
+    fn decode_txid_list_accepts_empty() {
+        assert_eq!(decode_txid_list(&[]).expect("empty"), vec![]);
+    }
+
+    // ---- store_output / load_output / delete_output / delete_utxo ---------
+
+    #[test]
+    fn store_and_load_output_round_trip() {
+        let store = make_store();
+        let txid = make_txid(0x02);
+        let outpoint = OutPoint::new(txid, 0);
+        let sh = make_script_hash(0x10);
+        store.store_output(outpoint, sh, 5000, 1).expect("store");
+        let loaded = store.load_output(&outpoint).expect("load").expect("found");
+        assert_eq!(loaded.value, 5000);
+        assert_eq!(loaded.height, 1);
+        assert_eq!(loaded.script_hash, sh);
+    }
+
+    #[test]
+    fn load_output_returns_none_for_unknown_outpoint() {
+        let store = make_store();
+        let op = OutPoint::new(make_txid(0xaa), 0);
+        assert!(store.load_output(&op).expect("load").is_none());
+    }
+
+    #[test]
+    fn delete_output_removes_entry() {
+        let store = make_store();
+        let txid = make_txid(0x03);
+        let op = OutPoint::new(txid, 0);
+        let sh = make_script_hash(0x11);
+        store.store_output(op, sh, 1000, 1).expect("store");
+        store.delete_output(&op).expect("delete");
+        assert!(store.load_output(&op).expect("load after delete").is_none());
+    }
+
+    #[test]
+    fn delete_utxo_removes_entry_from_balance() {
+        let store = make_store();
+        let txid = make_txid(0x04);
+        let op = OutPoint::new(txid, 0);
+        let sh = make_script_hash(0x12);
+        store.store_output(op, sh, 2000, 1).expect("store");
+        assert_eq!(store.balance_for_script(&sh).expect("balance"), 2000);
+        store.delete_utxo(sh, txid, 0).expect("delete utxo");
+        assert_eq!(store.balance_for_script(&sh).expect("balance"), 0);
+    }
+
+    // ---- balance_for_script -----------------------------------------------
+
+    #[test]
+    fn balance_for_script_is_zero_when_empty() {
+        let store = make_store();
+        assert_eq!(
+            store
+                .balance_for_script(&make_script_hash(0xaa))
+                .expect("balance"),
+            0
+        );
+    }
+
+    #[test]
+    fn balance_for_script_sums_multiple_outputs() {
+        let store = make_store();
+        let sh = make_script_hash(0x20);
+        for (i, v) in [1000u64, 2000, 3000].iter().enumerate() {
+            let op = OutPoint::new(make_txid(i as u8 + 1), 0);
+            store.store_output(op, sh, *v, 1).expect("store");
+        }
+        assert_eq!(store.balance_for_script(&sh).expect("balance"), 6000);
+    }
+
+    // ---- list_unspent_for_script ------------------------------------------
+
+    #[test]
+    fn list_unspent_for_script_returns_stored_outputs() {
+        let store = make_store();
+        let sh = make_script_hash(0x30);
+        let txid = make_txid(0x05);
+        let op = OutPoint::new(txid, 0);
+        store.store_output(op, sh, 9000, 2).expect("store");
+        let unspent = store.list_unspent_for_script(&sh).expect("list");
+        assert_eq!(unspent.len(), 1);
+        assert_eq!(unspent[0].txid, txid);
+        assert_eq!(unspent[0].vout, 0);
+        assert_eq!(unspent[0].value, 9000);
+        assert_eq!(unspent[0].height, 2);
+    }
+
+    #[test]
+    fn list_unspent_for_script_empty_when_none_stored() {
+        let store = make_store();
+        assert!(store
+            .list_unspent_for_script(&make_script_hash(0xbb))
+            .expect("list")
+            .is_empty());
+    }
+
+    // ---- decode_output error ----------------------------------------------
+
+    #[test]
+    fn decode_output_rejects_wrong_length() {
+        let op = OutPoint::null();
+        assert!(decode_output(&op, &[0u8; 43]).is_err());
+        assert!(decode_output(&op, &[0u8; 45]).is_err());
+        assert!(decode_output(&op, &[]).is_err());
+    }
+
+    #[test]
+    fn decode_output_accepts_exactly_44_bytes() {
+        let op = OutPoint::null();
+        assert!(decode_output(&op, &[0u8; 44]).is_ok());
+    }
+
+    // ---- history entries --------------------------------------------------
+
+    #[test]
+    fn has_history_returns_false_when_empty() {
+        let store = make_store();
+        assert!(!store.has_history(&make_script_hash(0xcc)));
+    }
+
+    #[test]
+    fn store_and_has_history_round_trip() {
+        let store = make_store();
+        let sh = make_script_hash(0x40);
+        let txid = make_txid(0x06);
+        store
+            .store_history_entry(sh, 1, txid, 0, HistoryKind::Fund)
+            .expect("store");
+        assert!(store.has_history(&sh));
+    }
+
+    #[test]
+    fn load_history_for_script_returns_entries_sorted_by_height() {
+        let store = make_store();
+        let sh = make_script_hash(0x41);
+        let txid_a = make_txid(0x0a);
+        let txid_b = make_txid(0x0b);
+        store
+            .store_history_entry(sh, 5, txid_b, 0, HistoryKind::Fund)
+            .expect("store 5");
+        store
+            .store_history_entry(sh, 1, txid_a, 0, HistoryKind::Fund)
+            .expect("store 1");
+        let entries = store.load_history_for_script(&sh).expect("load");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].height, 1);
+        assert_eq!(entries[1].height, 5);
+    }
+
+    #[test]
+    fn delete_history_key_removes_entry() {
+        let store = make_store();
+        let sh = make_script_hash(0x42);
+        let txid = make_txid(0x07);
+        let key = store
+            .store_history_entry(sh, 1, txid, 0, HistoryKind::Fund)
+            .expect("store");
+        store.delete_history_key(&key).expect("delete");
+        assert!(!store.has_history(&sh));
+    }
+
+    #[test]
+    fn load_history_entries_returns_all_entries() {
+        let store = make_store();
+        let sh_a = make_script_hash(0x50);
+        let sh_b = make_script_hash(0x51);
+        store
+            .store_history_entry(sh_a, 1, make_txid(0x08), 0, HistoryKind::Fund)
+            .expect("a");
+        store
+            .store_history_entry(sh_b, 2, make_txid(0x09), 0, HistoryKind::Spend)
+            .expect("b");
+        let all = store.load_history_entries().expect("load all");
+        assert_eq!(all.len(), 2);
+    }
+
+    // ---- parse_history_key error ------------------------------------------
+
+    #[test]
+    fn parse_history_key_rejects_wrong_length() {
+        assert!(parse_history_key(&[0u8; 72]).is_err());
+        assert!(parse_history_key(&[0u8; 74]).is_err());
+    }
+
+    #[test]
+    fn parse_history_key_accepts_exactly_73_bytes() {
+        assert!(parse_history_key(&[0u8; 73]).is_ok());
+    }
+
+    // ---- journal actions --------------------------------------------------
+
+    #[test]
+    fn store_and_load_journal_action_round_trip() {
+        let store = make_store();
+        let key = store
+            .store_journal_action(10, 0, JournalActionKind::Tx, &[0x01, 0x02])
+            .expect("store");
+        let actions = store.load_journal_actions().expect("load");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].height, 10);
+        assert_eq!(actions[0].sequence, 0);
+        assert_eq!(actions[0].kind, JournalActionKind::Tx);
+        assert_eq!(actions[0].payload, vec![0x01, 0x02]);
+        assert_eq!(actions[0].journal_key, key);
+    }
+
+    #[test]
+    fn delete_journal_key_removes_entry() {
+        let store = make_store();
+        let key = store
+            .store_journal_action(1, 0, JournalActionKind::History, &[])
+            .expect("store");
+        store.delete_journal_key(&key).expect("delete");
+        assert!(store.load_journal_actions().expect("load").is_empty());
+    }
+
+    #[test]
+    fn journal_actions_sorted_by_height_then_sequence() {
+        let store = make_store();
+        store
+            .store_journal_action(2, 1, JournalActionKind::Output, &[])
+            .expect("2:1");
+        store
+            .store_journal_action(1, 0, JournalActionKind::Tx, &[])
+            .expect("1:0");
+        store
+            .store_journal_action(2, 0, JournalActionKind::Spend, &[])
+            .expect("2:0");
+        let actions = store.load_journal_actions().expect("load");
+        assert_eq!(actions[0].height, 1);
+        assert_eq!(actions[1].height, 2);
+        assert_eq!(actions[1].sequence, 0);
+        assert_eq!(actions[2].height, 2);
+        assert_eq!(actions[2].sequence, 1);
+    }
+
+    // ---- parse_journal_action error ---------------------------------------
+
+    #[test]
+    fn parse_journal_action_rejects_wrong_key_length() {
+        assert!(parse_journal_action(&[0u8; 7], &[0u8]).is_err());
+        assert!(parse_journal_action(&[0u8; 9], &[0u8]).is_err());
+    }
+
+    #[test]
+    fn parse_journal_action_rejects_empty_value() {
+        assert!(parse_journal_action(&[0u8; 8], &[]).is_err());
+    }
+
+    #[test]
+    fn parse_journal_action_rejects_unknown_kind() {
+        assert!(parse_journal_action(&[0u8; 8], &[0xffu8]).is_err());
+    }
+
+    #[test]
+    fn parse_journal_action_recognises_all_kinds() {
+        for (byte, expected) in [
+            (0u8, JournalActionKind::Tx),
+            (1u8, JournalActionKind::History),
+            (2u8, JournalActionKind::Output),
+            (3u8, JournalActionKind::Spend),
+        ] {
+            let action = parse_journal_action(&[0u8; 8], &[byte]).expect("parse");
+            assert_eq!(action.kind, expected);
+        }
+    }
+}

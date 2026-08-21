@@ -2006,4 +2006,208 @@ mod tests {
             pending.as_str()
         );
     }
+
+    // ---- classify_tx_status -----------------------------------------------
+
+    #[test]
+    fn classify_tx_status_reverted() {
+        assert_eq!(
+            classify_tx_status("transaction has been reverted"),
+            TxStatusKind::Reverted
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_confirmed() {
+        assert_eq!(
+            classify_tx_status(
+                "transaction was included in block 0000000000000000000000000000000000000000000000000000000000000000 at height 1"
+            ),
+            TxStatusKind::Confirmed
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_stale() {
+        assert_eq!(
+            classify_tx_status(
+                "transaction was replaced by 0000000000000000000000000000000000000000000000000000000000000001 in block ..."
+            ),
+            TxStatusKind::Stale
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_acknowledged() {
+        assert_eq!(
+            classify_tx_status("transaction was acknowledged by peer 127.0.0.1:8333"),
+            TxStatusKind::Acknowledged
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_other() {
+        assert_eq!(classify_tx_status("unknown status"), TxStatusKind::Other);
+        assert_eq!(classify_tx_status(""), TxStatusKind::Other);
+    }
+
+    // ---- compute_status_hash ----------------------------------------------
+
+    #[test]
+    fn compute_status_hash_empty_returns_none() {
+        assert!(compute_status_hash(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn compute_status_hash_non_empty_returns_some() {
+        let txid = "0".repeat(64).parse().unwrap();
+        let history = vec![crate::indexer::TxEntry { txid, height: 1, sequence: 0 }];
+        assert!(compute_status_hash(&history, &[]).is_some());
+    }
+
+    // ---- dispatch_request: unknown method ---------------------------------
+
+    #[test]
+    fn dispatch_unknown_method_returns_error_json() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                Ok((0, bitcoin::BlockHash::all_zeros()))
+            }
+            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(None)
+            }
+            fn block_by_hash(&self, _hash: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let mut state = ClientState::new();
+        let fee_rate = Arc::new(FeeRateState::new());
+        let pending = PendingChangeBroadcaster::default();
+        let raw = r#"{"jsonrpc":"2.0","id":99,"method":"totally.unknown","params":[]}"#;
+        let resp = dispatch_request(raw, &mut state, &indexer, &FakeSource, &Metrics::new(), None, &fee_rate, &pending);
+        assert!(resp.get("error").is_some(), "expected error field in {resp}");
+        assert_eq!(resp["id"], json!(99));
+    }
+
+    // ---- handle_block_headers: missing params -----------------------------
+
+    #[test]
+    fn block_headers_missing_start_height_returns_error() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> { Ok((0, bitcoin::BlockHash::all_zeros())) }
+            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> { Ok(None) }
+            fn block_by_hash(&self, _: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> { Ok(None) }
+        }
+
+        assert!(handle_block_headers(&json!([]), &FakeSource).is_err());
+    }
+
+    #[test]
+    fn block_headers_missing_count_returns_error() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> { Ok((0, bitcoin::BlockHash::all_zeros())) }
+            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> { Ok(None) }
+            fn block_by_hash(&self, _: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> { Ok(None) }
+        }
+
+        assert!(handle_block_headers(&json!([0]), &FakeSource).is_err());
+    }
+
+    // ---- handle_transaction_broadcast: error paths ------------------------
+
+    #[test]
+    fn transaction_broadcast_without_broadcaster_returns_error() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![],
+        };
+        let params = json!([hex::encode(bitcoin::consensus::encode::serialize(&tx))]);
+        let pending = PendingChangeBroadcaster::default();
+        let err = handle_transaction_broadcast(&params, &Metrics::new(), None, &indexer, &pending)
+            .expect_err("should fail without broadcaster");
+        assert!(err.contains("bridge mode"), "got: {err}");
+    }
+
+    #[test]
+    fn transaction_broadcast_with_invalid_hex_returns_error() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+
+        struct NopBroadcaster;
+        impl TransactionBroadcaster for NopBroadcaster {
+            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> { Ok(()) }
+        }
+
+        let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(NopBroadcaster);
+        let pending = PendingChangeBroadcaster::default();
+        let err = handle_transaction_broadcast(
+            &json!(["not-hex"]),
+            &Metrics::new(),
+            Some(&broadcaster),
+            &indexer,
+            &pending,
+        )
+        .expect_err("invalid hex should fail");
+        assert!(err.contains("invalid hex"), "got: {err}");
+    }
+
+    #[test]
+    fn transaction_broadcast_with_invalid_tx_bytes_returns_error() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+
+        struct NopBroadcaster;
+        impl TransactionBroadcaster for NopBroadcaster {
+            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> { Ok(()) }
+        }
+
+        let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(NopBroadcaster);
+        let pending = PendingChangeBroadcaster::default();
+        let err = handle_transaction_broadcast(
+            &json!([hex::encode(b"not a valid tx")]),
+            &Metrics::new(),
+            Some(&broadcaster),
+            &indexer,
+            &pending,
+        )
+        .expect_err("invalid tx should fail");
+        assert!(err.contains("invalid transaction"), "got: {err}");
+    }
+
+    // ---- FeeRateState: multiple updates -----------------------------------
+
+    #[test]
+    fn fee_rate_state_last_update_wins() {
+        let fee_rate = FeeRateState::new();
+        fee_rate.update_sat_per_vb(10);
+        fee_rate.update_sat_per_vb(50);
+        assert_eq!(fee_rate.current_sat_per_vb(), Some(50));
+    }
 }

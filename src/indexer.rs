@@ -1177,6 +1177,53 @@ mod tests {
         hash_types::TxMerkleNode,
     };
 
+    // ---- ScriptHash public API --------------------------------------------
+
+    #[test]
+    fn script_hash_from_raw_bytes_round_trips_as_bytes() {
+        let raw = [0xABu8; 32];
+        let sh = ScriptHash::from_raw_bytes(raw);
+        assert_eq!(sh.as_bytes(), &raw);
+    }
+
+    #[test]
+    fn script_hash_to_hex_is_64_lowercase_hex_chars() {
+        let sh = ScriptHash::from_raw_bytes([0xFFu8; 32]);
+        let hex = sh.to_hex();
+        assert_eq!(hex.len(), 64);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(hex, "ff".repeat(32));
+    }
+
+    #[test]
+    fn script_hash_display_matches_to_hex() {
+        let sh = ScriptHash::from_raw_bytes([0x1Au8; 32]);
+        assert_eq!(format!("{sh}"), sh.to_hex());
+    }
+
+    #[test]
+    fn same_script_yields_equal_script_hashes() {
+        let script = Builder::from(vec![0x51u8]).into_script();
+        assert_eq!(ScriptHash::from_script(&script), ScriptHash::from_script(&script));
+    }
+
+    #[test]
+    fn different_scripts_yield_different_script_hashes() {
+        let a = Builder::from(vec![0x51u8]).into_script();
+        let b = Builder::from(vec![0x52u8]).into_script();
+        assert_ne!(ScriptHash::from_script(&a), ScriptHash::from_script(&b));
+    }
+
+    #[test]
+    fn script_hash_from_script_is_reversed_sha256() {
+        use bitcoin::hashes::sha256;
+        let script = Builder::from(vec![0x51u8]).into_script();
+        let digest = sha256::Hash::hash(script.as_bytes());
+        let mut expected: [u8; 32] = *digest.as_ref();
+        expected.reverse();
+        assert_eq!(ScriptHash::from_script(&script), ScriptHash::from_raw_bytes(expected));
+    }
+
     fn make_state() -> IndexState {
         let dir = tempfile::tempdir().expect("temp dir").keep();
         IndexState::new(dir).expect("state")
