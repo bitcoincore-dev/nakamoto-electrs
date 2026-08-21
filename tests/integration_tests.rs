@@ -31,7 +31,7 @@ fn read_line_until_nonempty(
     while line.is_empty() {
         assert!(Instant::now() < deadline, "timed out waiting for {context}");
         match reader.read_line(line) {
-            Ok(0) => thread::sleep(Duration::from_millis(50)),
+            Ok(0) => panic!("unexpected EOF while waiting for {context}"),
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(50));
