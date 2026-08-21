@@ -740,11 +740,13 @@ impl IndexState {
         self.store.store_tx(tx)
     }
 
-    fn record_peer_acknowledgement(&mut self, txid: &Txid) -> Result<()> {
-        if self.peer_seen_txs.insert(*txid) {
+    fn record_peer_acknowledgement(&mut self, txid: &Txid) -> Result<bool> {
+        let inserted = self.peer_seen_txs.insert(*txid);
+        if inserted {
             self.metrics.inc_peer_seen_transactions();
+            self.store.store_peer_seen_txid(*txid)?;
         }
-        self.store.store_peer_seen_txid(*txid)
+        Ok(inserted)
     }
 
     fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
@@ -935,7 +937,7 @@ impl Indexer {
             .store_transaction(tx)
     }
 
-    pub fn record_peer_acknowledgement(&self, txid: &Txid) -> Result<()> {
+    pub fn record_peer_acknowledgement(&self, txid: &Txid) -> Result<bool> {
         self.state
             .write()
             .expect("index write lock poisoned")
@@ -1510,14 +1512,14 @@ mod tests {
         {
             let metrics = Metrics::new();
             let indexer = Indexer::new(dir.clone(), metrics.clone()).expect("indexer");
-            indexer
+            assert!(indexer
                 .record_peer_acknowledgement(&txid)
-                .expect("record ack");
+                .expect("record ack"));
             assert!(indexer.has_peer_seen_txid(&txid));
             assert_eq!(metrics.peer_seen_transactions(), 1);
-            indexer
+            assert!(!indexer
                 .record_peer_acknowledgement(&txid)
-                .expect("record ack twice");
+                .expect("record ack twice"));
             assert_eq!(metrics.peer_seen_transactions(), 1);
         }
 
