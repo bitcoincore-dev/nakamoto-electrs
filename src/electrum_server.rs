@@ -85,6 +85,8 @@ pub(crate) fn apply_tx_status_change(
         indexer.forget_pending_transaction(&txid)?
     } else if status.contains("replaced by") {
         indexer.forget_pending_transaction_chain(&txid)?
+    } else if status.contains("acknowledged by peer") {
+        indexer.restore_pending_transaction(&txid)?
     } else {
         None
     };
@@ -1379,7 +1381,7 @@ mod tests {
     }
 
     #[test]
-    fn tx_status_ignored_for_unconfirmed_and_acknowledged() {
+    fn tx_status_unconfirmed_is_ignored_and_acknowledged_by_peer_restores() {
         let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
             .expect("indexer");
         let broadcaster = PendingChangeBroadcaster::default();
@@ -1411,16 +1413,19 @@ mod tests {
             "transaction is unconfirmed",
         )
         .expect("ignore");
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
+        assert!(rx.try_recv().is_err());
+
         apply_tx_status_change(
             &indexer,
             &broadcaster,
             &txid.to_string(),
             "transaction was acknowledged by peer 127.0.0.1:8333",
         )
-        .expect("ignore");
+        .expect("restore");
 
         assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
-        assert!(rx.try_recv().is_err());
+        assert_eq!(rx.recv().expect("notification"), vec![sh]);
     }
 
     #[test]
