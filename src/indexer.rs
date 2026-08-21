@@ -246,6 +246,49 @@ impl IndexState {
         self.rebuild_pending_view();
     }
 
+    fn forget_pending_transaction_chain_internal(&mut self, txid: &Txid) -> Vec<ScriptHash> {
+        use std::collections::{HashSet, VecDeque};
+
+        let mut affected = HashSet::new();
+        let mut removed = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(*txid);
+
+        while let Some(current_txid) = queue.pop_front() {
+            if !removed.insert(current_txid) {
+                continue;
+            }
+
+            if let Some(tx) = self.pending_txs.get(&current_txid).cloned() {
+                affected.extend(self.pending_affected_scripts_for_tx(&tx));
+            }
+
+            let descendants: Vec<Txid> = self
+                .pending_txs
+                .iter()
+                .filter(|(candidate_txid, _)| !removed.contains(*candidate_txid))
+                .filter(|(_, candidate)| {
+                    candidate.input.iter().any(|input| {
+                        !input.previous_output.is_null()
+                            && input.previous_output.txid == current_txid
+                    })
+                })
+                .map(|(candidate_txid, _)| *candidate_txid)
+                .collect();
+
+            for descendant in descendants {
+                queue.push_back(descendant);
+            }
+        }
+
+        for txid in &removed {
+            self.pending_txs.remove(txid);
+            let _ = self.store.delete_pending_txid(txid);
+        }
+        self.rebuild_pending_view();
+        affected.into_iter().collect()
+    }
+
     fn restore_pending_transaction(&mut self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
         let Some(tx) = self.store.load_tx(txid)? else {
             return Ok(None);
@@ -864,6 +907,15 @@ impl Indexer {
         let affected = state.pending_affected_scripts_for_tx(&tx);
         let _ = state.store.delete_pending_txid(txid);
         state.rebuild_pending_view();
+        Ok(Some(affected))
+    }
+
+    pub fn forget_pending_transaction_chain(&self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
+        let mut state = self.state.write().expect("index write lock poisoned");
+        if !state.pending_txs.contains_key(txid) {
+            return Ok(None);
+        }
+        let affected = state.forget_pending_transaction_chain_internal(txid);
         Ok(Some(affected))
     }
 
