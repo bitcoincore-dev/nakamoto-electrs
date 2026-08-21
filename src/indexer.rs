@@ -348,11 +348,9 @@ impl IndexState {
                 if seen_txs.contains(&candidate_txid) {
                     continue;
                 }
-                if candidate
-                    .input
-                    .iter()
-                    .any(|input| !input.previous_output.is_null() && input.previous_output.txid == txid)
-                {
+                if candidate.input.iter().any(|input| {
+                    !input.previous_output.is_null() && input.previous_output.txid == txid
+                }) {
                     queue.push_back(candidate_txid);
                 }
             }
