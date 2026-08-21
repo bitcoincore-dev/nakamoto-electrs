@@ -79,27 +79,7 @@ pub(crate) fn apply_tx_status_change(
     status: &str,
 ) -> Result<()> {
     let txid: bitcoin::Txid = txid.parse().context("invalid txid in tx status event")?;
-    let affected = match classify_tx_status(status) {
-        TxStatusKind::Reverted => {
-        indexer.restore_pending_transaction(&txid)?
-        }
-        TxStatusKind::Confirmed => {
-        indexer.forget_pending_transaction(&txid)?
-        }
-        TxStatusKind::Stale => {
-        indexer.forget_pending_transaction_chain(&txid)?
-        }
-        TxStatusKind::Acknowledged => {
-        indexer.restore_pending_transaction(&txid)?
-        }
-        TxStatusKind::Other => None,
-    };
-
-    if let Some(affected) = affected {
-        pending_changes.broadcast(affected);
-    }
-
-    Ok(())
+    apply_tx_status_kind(indexer, pending_changes, &txid, classify_tx_status(status))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +89,26 @@ enum TxStatusKind {
     Stale,
     Acknowledged,
     Other,
+}
+
+fn apply_tx_status_kind(
+    indexer: &Indexer,
+    pending_changes: &PendingChangeBroadcaster,
+    txid: &bitcoin::Txid,
+    kind: TxStatusKind,
+) -> Result<()> {
+    let affected = match kind {
+        TxStatusKind::Reverted => indexer.restore_pending_transaction(txid)?,
+        TxStatusKind::Confirmed => indexer.forget_pending_transaction(txid)?,
+        TxStatusKind::Stale => indexer.forget_pending_transaction_chain(txid)?,
+        TxStatusKind::Acknowledged | TxStatusKind::Other => None,
+    };
+
+    if let Some(affected) = affected {
+        pending_changes.broadcast(affected);
+    }
+
+    Ok(())
 }
 
 fn classify_tx_status(status: &str) -> TxStatusKind {
@@ -1408,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn tx_status_unconfirmed_is_ignored_and_acknowledged_by_peer_restores() {
+    fn tx_status_unconfirmed_is_ignored_and_acknowledged_by_peer_is_noop() {
         let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
             .expect("indexer");
         let broadcaster = PendingChangeBroadcaster::default();
@@ -1449,10 +1449,10 @@ mod tests {
             &txid.to_string(),
             "transaction was acknowledged by peer 127.0.0.1:8333",
         )
-        .expect("restore");
+        .expect("noop");
 
         assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
-        assert_eq!(rx.recv().expect("notification"), vec![sh]);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
