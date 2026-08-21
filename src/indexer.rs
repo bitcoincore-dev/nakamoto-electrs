@@ -115,10 +115,7 @@ struct IndexState {
 #[derive(Debug, Clone)]
 enum BlockAction {
     /// A transaction was mined in this block.
-    Tx {
-        txid: Txid,
-        journal_key: Vec<u8>,
-    },
+    Tx { txid: Txid, journal_key: Vec<u8> },
     /// A history entry (fund or spend) was added for a script hash.
     History {
         history_key: Vec<u8>,
@@ -1204,7 +1201,10 @@ mod tests {
     #[test]
     fn same_script_yields_equal_script_hashes() {
         let script = Builder::from(vec![0x51u8]).into_script();
-        assert_eq!(ScriptHash::from_script(&script), ScriptHash::from_script(&script));
+        assert_eq!(
+            ScriptHash::from_script(&script),
+            ScriptHash::from_script(&script)
+        );
     }
 
     #[test]
@@ -1221,7 +1221,10 @@ mod tests {
         let digest = sha256::Hash::hash(script.as_bytes());
         let mut expected: [u8; 32] = *digest.as_ref();
         expected.reverse();
-        assert_eq!(ScriptHash::from_script(&script), ScriptHash::from_raw_bytes(expected));
+        assert_eq!(
+            ScriptHash::from_script(&script),
+            ScriptHash::from_raw_bytes(expected)
+        );
     }
 
     fn make_state() -> IndexState {
@@ -1741,7 +1744,10 @@ mod tests {
             assert!(state.mempool(&sh).expect("mempool").is_empty());
         }
         let sh_replacement = ScriptHash::from_script(&Builder::from(vec![0x54u8]).into_script());
-        assert_eq!(state.mempool(&sh_replacement).expect("mempool repl").len(), 1);
+        assert_eq!(
+            state.mempool(&sh_replacement).expect("mempool repl").len(),
+            1
+        );
     }
 
     #[test]
@@ -1920,7 +1926,9 @@ mod tests {
                 script_pubkey: child_script.clone(),
             }],
         };
-        indexer.track_pending_transaction(&child).expect("track child");
+        indexer
+            .track_pending_transaction(&child)
+            .expect("track child");
 
         let forgotten = indexer
             .forget_pending_transaction(&parent.compute_txid())
@@ -1930,7 +1938,12 @@ mod tests {
         let child_sh = ScriptHash::from_script(&child_script);
         assert!(forgotten.contains(&parent_sh));
         assert!(forgotten.contains(&child_sh));
-        assert!(indexer.get_mempool(&parent_sh).expect("parent mempool").is_empty());
+        assert!(
+            indexer
+                .get_mempool(&parent_sh)
+                .expect("parent mempool")
+                .is_empty()
+        );
 
         let child_mempool = indexer.get_mempool(&child_sh).expect("child mempool");
         assert_eq!(child_mempool.len(), 1);
@@ -1940,7 +1953,12 @@ mod tests {
         let child_unspent = indexer.list_unspent(&child_sh).expect("child unspent");
         assert_eq!(child_unspent.len(), 1);
         assert_eq!(child_unspent[0].height, 0);
-        assert!(indexer.list_unspent(&parent_sh).expect("parent unspent").is_empty());
+        assert!(
+            indexer
+                .list_unspent(&parent_sh)
+                .expect("parent unspent")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1980,7 +1998,9 @@ mod tests {
         indexer
             .track_pending_transaction(&parent)
             .expect("track parent");
-        indexer.track_pending_transaction(&child).expect("track child");
+        indexer
+            .track_pending_transaction(&child)
+            .expect("track child");
 
         let affected = indexer
             .forget_pending_transaction_chain(&parent.compute_txid())
@@ -1988,8 +2008,18 @@ mod tests {
             .expect("affected");
         let child_sh = ScriptHash::from_script(&child_script);
         assert!(affected.contains(&child_sh));
-        assert!(indexer.get_mempool(&child_sh).expect("child mempool").is_empty());
-        assert!(indexer.list_unspent(&child_sh).expect("child unspent").is_empty());
+        assert!(
+            indexer
+                .get_mempool(&child_sh)
+                .expect("child mempool")
+                .is_empty()
+        );
+        assert!(
+            indexer
+                .list_unspent(&child_sh)
+                .expect("child unspent")
+                .is_empty()
+        );
         assert!(
             indexer
                 .forget_pending_transaction_chain(&parent.compute_txid())

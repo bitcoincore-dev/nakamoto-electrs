@@ -705,10 +705,12 @@ mod tests {
     #[test]
     fn list_unspent_for_script_empty_when_none_stored() {
         let store = make_store();
-        assert!(store
-            .list_unspent_for_script(&make_script_hash(0xbb))
-            .expect("list")
-            .is_empty());
+        assert!(
+            store
+                .list_unspent_for_script(&make_script_hash(0xbb))
+                .expect("list")
+                .is_empty()
+        );
     }
 
     // ---- decode_output error ----------------------------------------------
