@@ -1498,6 +1498,147 @@ mod tests {
     }
 
     #[test]
+    fn get_mempool_returns_multiple_entries_for_same_script_sorted_by_txid() {
+        let mut state = make_state();
+        let fund_script = p2pkh_script();
+        let target_script = vec![0x51];
+        let fund_block = make_block(1, vec![fund_script, vec![0x52]]);
+        let fund_txid = fund_block.txdata[0].compute_txid();
+        state.apply_block(&fund_block, 1).expect("apply fund");
+
+        let first = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::new(fund_txid, 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: Builder::from(target_script.clone()).into_script(),
+            }],
+        };
+        let second = Transaction {
+            version: bitcoin::transaction::Version::non_standard(2),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::new(fund_txid, 1),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(850),
+                script_pubkey: Builder::from(target_script.clone()).into_script(),
+            }],
+        };
+        state
+            .track_pending_transaction_internal(&first)
+            .expect("track first");
+        state
+            .track_pending_transaction_internal(&second)
+            .expect("track second");
+
+        let sh = ScriptHash::from_script(&Builder::from(target_script).into_script());
+        let mempool = state.mempool(&sh).expect("mempool");
+        assert_eq!(mempool.len(), 2);
+
+        let mut expected = vec![
+            (first.compute_txid(), 100u64),
+            (second.compute_txid(), 150u64),
+        ];
+        expected.sort_by_key(|(txid, _)| txid.to_string());
+
+        assert_eq!(mempool[0].txid, expected[0].0);
+        assert_eq!(mempool[0].fee, expected[0].1);
+        assert_eq!(mempool[1].txid, expected[1].0);
+        assert_eq!(mempool[1].fee, expected[1].1);
+    }
+
+    #[test]
+    fn get_mempool_returns_empty_for_script_with_no_pending_activity() {
+        let mut state = make_state();
+        let script = p2pkh_script();
+        let block = make_block(1, vec![script.clone()]);
+        state.apply_block(&block, 1).expect("apply");
+
+        let sh = ScriptHash::from_script(&Builder::from(script).into_script());
+        assert!(state.mempool(&sh).expect("mempool").is_empty());
+    }
+
+    #[test]
+    fn get_mempool_deduplicates_duplicate_inputs_in_fee_calculation() {
+        let mut state = make_state();
+        let fund_block = make_block(1, vec![p2pkh_script()]);
+        let fund_txid = fund_block.txdata[0].compute_txid();
+        state.apply_block(&fund_block, 1).expect("apply fund");
+
+        let target_script = vec![0x51];
+        let duplicated = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![
+                bitcoin::blockdata::transaction::TxIn {
+                    previous_output: OutPoint::new(fund_txid, 0),
+                    script_sig: bitcoin::ScriptBuf::new(),
+                    sequence: bitcoin::Sequence::MAX,
+                    witness: bitcoin::Witness::new(),
+                },
+                bitcoin::blockdata::transaction::TxIn {
+                    previous_output: OutPoint::new(fund_txid, 0),
+                    script_sig: bitcoin::ScriptBuf::new(),
+                    sequence: bitcoin::Sequence::MAX,
+                    witness: bitcoin::Witness::new(),
+                },
+            ],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: Builder::from(target_script.clone()).into_script(),
+            }],
+        };
+        state
+            .track_pending_transaction_internal(&duplicated)
+            .expect("track duplicated");
+
+        let sh = ScriptHash::from_script(&Builder::from(target_script).into_script());
+        let mempool = state.mempool(&sh).expect("mempool");
+        assert_eq!(mempool.len(), 1);
+        assert_eq!(mempool[0].fee, 100);
+        assert_eq!(mempool[0].height, 0);
+    }
+
+    #[test]
+    fn get_mempool_unknown_prevout_reports_zero_fee_and_unconfirmed_height() {
+        let mut state = make_state();
+        let target_script = vec![0x51];
+        let unknown = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::new("01".repeat(32).parse().expect("txid"), 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: Builder::from(target_script.clone()).into_script(),
+            }],
+        };
+        state
+            .track_pending_transaction_internal(&unknown)
+            .expect("track unknown");
+
+        let sh = ScriptHash::from_script(&Builder::from(target_script).into_script());
+        let mempool = state.mempool(&sh).expect("mempool");
+        assert_eq!(mempool.len(), 1);
+        assert_eq!(mempool[0].fee, 0);
+        assert_eq!(mempool[0].height, -1);
+    }
+
+    #[test]
     fn track_pending_transaction_replaces_conflicting_pending_chain() {
         let mut state = make_state();
         let fund_script = p2pkh_script();
@@ -1740,5 +1881,211 @@ mod tests {
                 .is_none()
         );
         assert!(indexer.forget_pending_transaction(&txid).unwrap().is_none());
+    }
+
+    #[test]
+    fn forget_pending_transaction_keeps_descendants_and_returns_affected_scripts() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let parent_script = Builder::from(vec![0x51]).into_script();
+        let child_script = Builder::from(vec![0x52]).into_script();
+        let parent = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: parent_script.clone(),
+            }],
+        };
+        indexer
+            .track_pending_transaction(&parent)
+            .expect("track parent");
+        let child = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::new(parent.compute_txid(), 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: child_script.clone(),
+            }],
+        };
+        indexer.track_pending_transaction(&child).expect("track child");
+
+        let forgotten = indexer
+            .forget_pending_transaction(&parent.compute_txid())
+            .expect("forget parent")
+            .expect("forgotten");
+        let parent_sh = ScriptHash::from_script(&parent_script);
+        let child_sh = ScriptHash::from_script(&child_script);
+        assert!(forgotten.contains(&parent_sh));
+        assert!(forgotten.contains(&child_sh));
+        assert!(indexer.get_mempool(&parent_sh).expect("parent mempool").is_empty());
+
+        let child_mempool = indexer.get_mempool(&child_sh).expect("child mempool");
+        assert_eq!(child_mempool.len(), 1);
+        assert_eq!(child_mempool[0].height, -1);
+        assert_eq!(child_mempool[0].fee, 0);
+
+        let child_unspent = indexer.list_unspent(&child_sh).expect("child unspent");
+        assert_eq!(child_unspent.len(), 1);
+        assert_eq!(child_unspent[0].height, 0);
+        assert!(indexer.list_unspent(&parent_sh).expect("parent unspent").is_empty());
+    }
+
+    #[test]
+    fn public_forget_pending_transaction_chain_removes_descendants() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let parent_script = Builder::from(vec![0x51]).into_script();
+        let child_script = Builder::from(vec![0x52]).into_script();
+        let parent = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: parent_script.clone(),
+            }],
+        };
+        let child = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::new(parent.compute_txid(), 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: child_script.clone(),
+            }],
+        };
+        indexer
+            .track_pending_transaction(&parent)
+            .expect("track parent");
+        indexer.track_pending_transaction(&child).expect("track child");
+
+        let affected = indexer
+            .forget_pending_transaction_chain(&parent.compute_txid())
+            .expect("forget chain")
+            .expect("affected");
+        let child_sh = ScriptHash::from_script(&child_script);
+        assert!(affected.contains(&child_sh));
+        assert!(indexer.get_mempool(&child_sh).expect("child mempool").is_empty());
+        assert!(indexer.list_unspent(&child_sh).expect("child unspent").is_empty());
+        assert!(
+            indexer
+                .forget_pending_transaction_chain(&parent.compute_txid())
+                .expect("forget again")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn restore_pending_transaction_returns_none_after_forget_and_store_delete() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(750),
+                script_pubkey: Builder::from(vec![0x51]).into_script(),
+            }],
+        };
+        let txid = tx.compute_txid();
+        indexer.store_transaction(&tx).expect("store tx");
+        indexer
+            .restore_pending_transaction(&txid)
+            .expect("restore once")
+            .expect("restored");
+        indexer
+            .forget_pending_transaction(&txid)
+            .expect("forget")
+            .expect("forgotten");
+        indexer
+            .state
+            .read()
+            .expect("read lock")
+            .store
+            .delete_tx(&txid)
+            .expect("delete tx");
+
+        assert!(
+            indexer
+                .restore_pending_transaction(&txid)
+                .expect("restore missing")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn apply_block_clears_confirmed_pending_transaction_from_mempool() {
+        let mut state = make_state();
+        let fund_block = make_block(1, vec![p2pkh_script()]);
+        let fund_txid = fund_block.txdata[0].compute_txid();
+        state.apply_block(&fund_block, 1).expect("apply fund");
+
+        let target_script = vec![0x51];
+        let pending = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: OutPoint::new(fund_txid, 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: Builder::from(target_script.clone()).into_script(),
+            }],
+        };
+        state
+            .track_pending_transaction_internal(&pending)
+            .expect("track pending");
+        let sh = ScriptHash::from_script(&Builder::from(target_script.clone()).into_script());
+        assert_eq!(state.mempool(&sh).expect("mempool before").len(), 1);
+
+        let block = Block {
+            header: BlockHeader {
+                version: Version::ONE,
+                prev_blockhash: BlockHash::all_zeros(),
+                merkle_root: TxMerkleNode::all_zeros(),
+                time: 2,
+                bits: CompactTarget::from_consensus(0x1d00ffff),
+                nonce: 0,
+            },
+            txdata: vec![pending],
+        };
+        state.apply_block(&block, 2).expect("apply confirm");
+
+        assert!(state.mempool(&sh).expect("mempool after").is_empty());
+        let unspent = state.list_unspent(&sh).expect("confirmed unspent");
+        assert_eq!(unspent.len(), 1);
+        assert_eq!(unspent[0].height, 2);
     }
 }
