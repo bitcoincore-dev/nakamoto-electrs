@@ -132,7 +132,7 @@ trait HandleErased: Send + Sync {
         (u64, nakamoto_common::bitcoin::blockdata::block::BlockHeader),
         nakamoto_client::handle::Error,
     >;
-    fn get_block_erased(
+    fn request_block_erased(
         &self,
         hash: &nakamoto_common::bitcoin::hash_types::BlockHash,
     ) -> std::result::Result<(), nakamoto_client::handle::Error>;
@@ -152,14 +152,14 @@ impl<H: Handle + Send + Sync> HandleErased for HandleWrap<H> {
         (u64, nakamoto_common::bitcoin::blockdata::block::BlockHeader),
         nakamoto_client::handle::Error,
     > {
-        self.0.get_tip()
+        self.0.get_tip().map(|(height, header, _)| (height, header))
     }
 
-    fn get_block_erased(
+    fn request_block_erased(
         &self,
         hash: &nakamoto_common::bitcoin::hash_types::BlockHash,
     ) -> std::result::Result<(), nakamoto_client::handle::Error> {
-        self.0.get_block(hash)
+        self.0.request_block(hash)
     }
 
     fn query_tree_erased(
@@ -245,8 +245,8 @@ impl NakamotoBlockSource {
                                     debug!("BlockConnected h={height} {hash}");
                                     // Ask nakamoto to download the full block.  It
                                     // will be delivered to `blocks_rx` handled above.
-                                    if let Err(e) = handle_ref.get_block_erased(&hash) {
-                                        warn!("get_block({hash}) failed: {e}");
+                                    if let Err(e) = handle_ref.request_block_erased(&hash) {
+                                        warn!("request_block({hash}) failed: {e}");
                                     }
                                 }
                                 NkEvent::BlockDisconnected { hash, height, .. } => {
@@ -407,6 +407,12 @@ mod tests {
             Box::new(items.into_iter())
         }
 
+        fn chain_work(&self) -> nakamoto_common::bitcoin::util::uint::Uint256 {
+            self.headers
+                .values()
+                .fold(Default::default(), |work, header| work + header.work())
+        }
+
         fn height(&self) -> Height {
             self.headers.keys().next_back().copied().unwrap_or(0)
         }
@@ -488,13 +494,39 @@ mod tests {
     }
 
     impl Handle for FakeHandle {
-        fn get_tip(&self) -> Result<(u64, BlockHeader), nakamoto_client::handle::Error> {
+        fn get_tip(
+            &self,
+        ) -> Result<
+            (
+                u64,
+                BlockHeader,
+                nakamoto_common::bitcoin::util::uint::Uint256,
+            ),
+            nakamoto_client::handle::Error,
+        > {
             let (hash, header) = self.tree.tip();
             let (height, _) = self.tree.get_block(&hash).expect("tip exists");
-            Ok((height, header))
+            Ok((height, header, self.tree.chain_work()))
         }
 
-        fn get_block(&self, hash: &NkBlockHash) -> Result<(), nakamoto_client::handle::Error> {
+        fn get_block(
+            &self,
+            hash: &NkBlockHash,
+        ) -> Result<Option<(u64, BlockHeader)>, nakamoto_client::handle::Error> {
+            Ok(self.tree.get_block(hash).map(|(height, header)| (height, *header)))
+        }
+
+        fn get_block_by_height(
+            &self,
+            height: Height,
+        ) -> Result<Option<BlockHeader>, nakamoto_client::handle::Error> {
+            Ok(self.tree.get_block_by_height(height).copied())
+        }
+
+        fn request_block(
+            &self,
+            hash: &NkBlockHash,
+        ) -> Result<(), nakamoto_client::handle::Error> {
             self.requested_blocks.lock().unwrap().push(*hash);
             Ok(())
         }
@@ -592,7 +624,7 @@ mod tests {
             unreachable!()
         }
 
-        fn get_filters(
+        fn request_filters(
             &self,
             _range: std::ops::RangeInclusive<Height>,
         ) -> Result<(), nakamoto_client::handle::Error> {
