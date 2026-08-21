@@ -1532,6 +1532,60 @@ mod tests {
     }
 
     #[test]
+    fn tx_status_for_parent_notifies_descendant_scripts() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+
+        let parent_script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let child_script = bitcoin::ScriptBuf::from_bytes(vec![0x52]);
+        let parent = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: parent_script.clone(),
+            }],
+        };
+        let parent_txid = parent.compute_txid();
+        let child = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::new(parent_txid, 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: child_script.clone(),
+            }],
+        };
+        indexer.track_pending_transaction(&parent).expect("track parent");
+        indexer.track_pending_transaction(&child).expect("track child");
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &parent_txid.to_string(),
+            "transaction was included in block 0000000000000000000000000000000000000000000000000000000000000000 at height 1",
+        )
+        .expect("forget parent");
+
+        let affected = rx.recv().expect("pending notification");
+        assert!(affected.contains(&ScriptHash::from_script(&parent_script)));
+        assert!(affected.contains(&ScriptHash::from_script(&child_script)));
+    }
+
+    #[test]
     fn headers_subscribe_returns_current_tip_shape() {
         use crate::block_source::{BlockEvent, BlockSource};
         use crossbeam_channel::Receiver;
