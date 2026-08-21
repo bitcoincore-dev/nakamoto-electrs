@@ -1216,11 +1216,21 @@ mod tests {
             .track_pending_transaction_internal(&tx)
             .expect("track pending");
         assert_eq!(state.mempool(&sh).expect("mempool").len(), 1);
-        assert_eq!(state.store.load_pending_txids().expect("pending ids").len(), 1);
+        assert_eq!(
+            state.store.load_pending_txids().expect("pending ids").len(),
+            1
+        );
         drop(state);
 
         let reopened = IndexState::new(dir).expect("reopen");
-        assert_eq!(reopened.store.load_pending_txids().expect("pending ids").len(), 1);
+        assert_eq!(
+            reopened
+                .store
+                .load_pending_txids()
+                .expect("pending ids")
+                .len(),
+            1
+        );
         assert_eq!(reopened.pending_txs.len(), 1);
         assert_eq!(reopened.pending_outputs.len(), 1);
         let mempool = reopened.mempool(&sh).expect("mempool after restart");
