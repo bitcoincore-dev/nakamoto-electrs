@@ -27,6 +27,7 @@ fn read_line_until_nonempty(
     deadline: Instant,
     context: &str,
 ) {
+    debug_assert!(line.is_empty(), "line buffer must be empty");
     while line.is_empty() {
         assert!(Instant::now() < deadline, "timed out waiting for {context}");
         match reader.read_line(line) {
@@ -2062,21 +2063,12 @@ fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
     );
 
     line.clear();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while line.is_empty() {
-        match sub_reader.read_line(&mut line) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "timed out waiting for child notification"
-                );
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("failed to read child notification: {err}"),
-        }
-    }
+    read_line_until_nonempty(
+        &mut sub_reader,
+        &mut line,
+        Instant::now() + Duration::from_secs(5),
+        "child notification",
+    );
     let child_note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(child_note["method"], "blockchain.scripthash.subscribe");
     assert_eq!(
@@ -2099,21 +2091,12 @@ fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
     repl_stream.write_all(b"\n").unwrap();
 
     line.clear();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while line.is_empty() {
-        match sub_reader.read_line(&mut line) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "timed out waiting for replacement notification"
-                );
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("failed to read replacement notification: {err}"),
-        }
-    }
+    read_line_until_nonempty(
+        &mut sub_reader,
+        &mut line,
+        Instant::now() + Duration::from_secs(5),
+        "replacement notification",
+    );
     let note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(note["method"], "blockchain.scripthash.subscribe");
     assert_eq!(
