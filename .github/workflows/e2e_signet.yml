@@ -260,7 +260,6 @@ jobs:
             exit "$status"
           fi
 
-          set +e
           ELECTRS_CONF="$RUNNER_TEMP/electrs-signet.toml"
           python3 - "$ELECTRS_CONF" "$HOME/.bitcoin-stable" "${BITCOIND_RPC_USER}" "${BITCOIND_RPC_PASS}" <<'PY'
           from pathlib import Path
@@ -276,6 +275,7 @@ jobs:
               f'auth = "{rpc_user}:{rpc_pass}"\n'
           )
           PY
+          set +e
           timeout 10s cargo run --features electrs-bin --example electrs -- \
             --conf "$ELECTRS_CONF"
           status=$?
