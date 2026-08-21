@@ -1715,6 +1715,8 @@ fn electrum_scripthash_get_mempool_updates_when_parent_confirms() {
     shutdown.store(true, Ordering::SeqCst);
 }
 
+// Verifies that replacing a pending parent evicts its descendant chain from
+// the Electrum mempool view and notifies subscribed child scripts.
 #[test]
 fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
     #[derive(Clone, Default)]
