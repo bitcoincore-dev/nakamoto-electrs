@@ -533,6 +533,8 @@ impl IndexState {
         for tx in &block.txdata {
             let txid = tx.compute_txid();
             self.forget_pending_transaction_internal(&txid);
+            self.peer_seen_txs.remove(&txid);
+            let _ = self.store.delete_peer_seen_txid(&txid);
             self.store.store_tx(tx)?;
             let tx_key = self.store.store_journal_action(
                 height,
@@ -1525,6 +1527,19 @@ mod tests {
 
         let reopened = Indexer::new(dir, Metrics::new()).expect("reopen");
         assert!(reopened.has_peer_seen_txid(&txid));
+    }
+
+    #[test]
+    fn peer_seen_transactions_are_cleared_when_confirmed() {
+        let mut state = make_state();
+        let block = make_block(1, vec![p2pkh_script()]);
+        let txid = block.txdata[0].compute_txid();
+        state
+            .record_peer_acknowledgement(&txid)
+            .expect("record ack");
+        assert!(state.peer_seen_txs.contains(&txid));
+        state.apply_block(&block, 1).expect("apply");
+        assert!(!state.peer_seen_txs.contains(&txid));
     }
 
     #[test]
