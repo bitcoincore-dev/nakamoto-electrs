@@ -1062,7 +1062,10 @@ mod tests {
             height: 0,
             fee: 10,
         }];
-        assert_ne!(compute_status_hash(&history, &[]), compute_status_hash(&history, &mempool));
+        assert_ne!(
+            compute_status_hash(&history, &[]),
+            compute_status_hash(&history, &mempool)
+        );
     }
 
     #[test]
@@ -1208,7 +1211,9 @@ mod tests {
                 script_pubkey: script.clone(),
             }],
         };
-        indexer.track_pending_transaction(&tx).expect("track pending");
+        indexer
+            .track_pending_transaction(&tx)
+            .expect("track pending");
         let sh = ScriptHash::from_script(&script);
         let resp = handle_scripthash_get_mempool(&json!([sh.to_hex()]), &indexer).expect("mempool");
         let arr = resp.as_array().expect("array");
