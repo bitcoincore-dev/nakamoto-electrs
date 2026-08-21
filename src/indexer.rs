@@ -1274,6 +1274,61 @@ mod tests {
     }
 
     #[test]
+    fn track_pending_transaction_replaces_conflicting_pending_chain() {
+        let mut state = make_state();
+        let fund_script = p2pkh_script();
+        let block = make_block(1, vec![fund_script.clone()]);
+        let fund_txid = block.txdata[0].compute_txid();
+        let fund_outpoint = OutPoint::new(fund_txid, 0);
+        state.apply_block(&block, 1).expect("apply fund");
+
+        let first_script = vec![0x51];
+        let first = make_spend_block(2, fund_outpoint, first_script.clone())
+            .txdata
+            .into_iter()
+            .next()
+            .expect("first tx");
+        state
+            .track_pending_transaction_internal(&first)
+            .expect("track first");
+        let child_script = vec![0x52];
+        let child = make_spend_block(
+            3,
+            OutPoint::new(first.compute_txid(), 0),
+            child_script.clone(),
+        )
+        .txdata
+        .into_iter()
+        .next()
+        .expect("child tx");
+        state
+            .track_pending_transaction_internal(&child)
+            .expect("track child");
+
+        let replacement_script = vec![0x53];
+        let replacement = make_spend_block(4, fund_outpoint, replacement_script.clone())
+            .txdata
+            .into_iter()
+            .next()
+            .expect("replacement tx");
+        state
+            .track_pending_transaction_internal(&replacement)
+            .expect("track replacement");
+
+        let sh_first = ScriptHash::from_script(&Builder::from(first_script).into_script());
+        let sh_child = ScriptHash::from_script(&Builder::from(child_script).into_script());
+        let sh_replacement =
+            ScriptHash::from_script(&Builder::from(replacement_script).into_script());
+
+        assert!(state.mempool(&sh_first).expect("mempool first").is_empty());
+        assert!(state.mempool(&sh_child).expect("mempool child").is_empty());
+        assert_eq!(
+            state.mempool(&sh_replacement).expect("mempool repl").len(),
+            1
+        );
+    }
+
+    #[test]
     fn restart_preserves_rollback_state() {
         let dir = tempfile::tempdir().expect("temp dir").keep();
         let mut state = IndexState::new(dir.clone()).expect("state");
