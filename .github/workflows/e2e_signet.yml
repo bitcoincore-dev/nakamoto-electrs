@@ -193,7 +193,7 @@ jobs:
           if ! bitcoin-cli -signet \
               -rpcuser="${RPC_USER}" -rpcpassword="${RPC_PASS}" \
               -rpcport=38332 getblockchaininfo > /dev/null 2>&1; then
-            echo "Stable bitcoind RPC did not become ready before RC start" >&2
+            echo "Stable bitcoind RPC did not become ready in time" >&2
             exit 1
           fi
 

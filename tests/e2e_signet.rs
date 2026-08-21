@@ -134,7 +134,7 @@ fn e2e_headers_subscribe_returns_tip() {
 
 #[test]
 #[ignore = "requires external bitcoind -signet; run with --ignored"]
-fn e2e_scripthash_history_after_payment() {
+fn e2e_scripthash_history_empty_for_unseen_script() {
     let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
     let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
     let datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
@@ -156,7 +156,7 @@ fn e2e_scripthash_history_after_payment() {
 
     let (addr, _tmp_dir) = start_electrum_server();
 
-    let script_hash = "0".repeat(64);
+    let script_hash = "11".repeat(32);
     let request = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.scripthash.get_history","params":["{script_hash}"]}}"#
     );
@@ -281,7 +281,7 @@ fn e2e_get_mempool_returns_empty_for_unseen_script() {
 
     let (addr, _tmp_dir) = start_electrum_server();
 
-    let script_hash = "0".repeat(64);
+    let script_hash = "11".repeat(32);
     let request = format!(
         r#"{{"jsonrpc":"2.0","id":10,"method":"blockchain.scripthash.get_mempool","params":["{script_hash}"]}}"#
     );
