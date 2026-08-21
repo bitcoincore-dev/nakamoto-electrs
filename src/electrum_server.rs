@@ -79,16 +79,20 @@ pub(crate) fn apply_tx_status_change(
     status: &str,
 ) -> Result<()> {
     let txid: bitcoin::Txid = txid.parse().context("invalid txid in tx status event")?;
-    let affected = if status.contains("reverted") {
+    let affected = match classify_tx_status(status) {
+        TxStatusKind::Reverted => {
         indexer.restore_pending_transaction(&txid)?
-    } else if status.contains("included in block") {
+        }
+        TxStatusKind::Confirmed => {
         indexer.forget_pending_transaction(&txid)?
-    } else if status.contains("replaced by") {
+        }
+        TxStatusKind::Stale => {
         indexer.forget_pending_transaction_chain(&txid)?
-    } else if status.contains("acknowledged by peer") {
+        }
+        TxStatusKind::Acknowledged => {
         indexer.restore_pending_transaction(&txid)?
-    } else {
-        None
+        }
+        TxStatusKind::Other => None,
     };
 
     if let Some(affected) = affected {
@@ -96,6 +100,29 @@ pub(crate) fn apply_tx_status_change(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxStatusKind {
+    Reverted,
+    Confirmed,
+    Stale,
+    Acknowledged,
+    Other,
+}
+
+fn classify_tx_status(status: &str) -> TxStatusKind {
+    if status == "transaction has been reverted" {
+        TxStatusKind::Reverted
+    } else if status.starts_with("transaction was included in block ") {
+        TxStatusKind::Confirmed
+    } else if status.starts_with("transaction was replaced by ") {
+        TxStatusKind::Stale
+    } else if status.starts_with("transaction was acknowledged by peer ") {
+        TxStatusKind::Acknowledged
+    } else {
+        TxStatusKind::Other
+    }
 }
 
 #[derive(Debug, Default)]
