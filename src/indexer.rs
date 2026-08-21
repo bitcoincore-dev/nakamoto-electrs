@@ -1041,7 +1041,7 @@ impl Indexer {
     /// mempool view.
     ///
     /// This allows a transaction to be stored so it can be restored later via
-    /// [`Indexer::restore_pending_transaction`] if, for example, the nakamoto peer
+    /// [`Indexer::restore_pending_transaction`] if, for example, the Nakamoto peer
     /// reports that it was reverted.
     pub fn store_transaction(&self, tx: &Transaction) -> Result<()> {
         self.state

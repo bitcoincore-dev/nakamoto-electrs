@@ -83,10 +83,10 @@ impl PendingChangeBroadcaster {
     }
 }
 
-/// Process a transaction-status event from the nakamoto peer, updating the
+/// Process a transaction-status event from the Nakamoto peer, updating the
 /// pending mempool view and notifying subscribers of any affected scripts.
 ///
-/// This is the bridge between the nakamoto `FilterClient` event stream and the
+/// This is the bridge between the Nakamoto `FilterClient` event stream and the
 /// Electrum subscription machinery.
 pub(crate) fn apply_tx_status_change(
     indexer: &Indexer,
@@ -98,7 +98,7 @@ pub(crate) fn apply_tx_status_change(
     apply_tx_status_kind(indexer, pending_changes, &txid, classify_tx_status(status))
 }
 
-/// How a transaction-status string from the nakamoto peer should be handled.
+/// How a transaction-status string from the Nakamoto peer should be handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TxStatusKind {
     /// The transaction was reverted; restore it to the pending view.
@@ -151,7 +151,7 @@ fn classify_tx_status(status: &str) -> TxStatusKind {
     }
 }
 
-/// Tracks the most recently seen fee rate reported by the nakamoto peer.
+/// Tracks the most recently seen fee rate reported by the Nakamoto peer.
 ///
 /// Stored atomically so the Electrum server can read it without holding any
 /// lock.  A value of `0` means no estimate has been received yet, which is
