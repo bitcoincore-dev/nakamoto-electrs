@@ -1340,48 +1340,27 @@ mod tests {
 
     #[test]
     fn scripthash_get_mempool_reports_confirmed_input_fee() {
-        use bitcoin::hashes::Hash;
-
         let dir = tempfile::tempdir().expect("temp").keep();
+        let prevout = bitcoin::OutPoint::new("11".repeat(32).parse().expect("txid"), 0);
+        {
+            let store = crate::store::PersistentIndex::open(&dir).expect("open store");
+            store
+                .store_output(
+                    prevout,
+                    ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(vec![0x51])),
+                    1000,
+                    1,
+                )
+                .expect("store output");
+        }
         let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
-        let fund_block = bitcoin::Block {
-            header: bitcoin::blockdata::block::Header {
-                version: bitcoin::blockdata::block::Version::ONE,
-                prev_blockhash: bitcoin::BlockHash::all_zeros(),
-                merkle_root: bitcoin::hash_types::TxMerkleNode::all_zeros(),
-                time: 1,
-                bits: bitcoin::CompactTarget::from_consensus(0x1d00ffff),
-                nonce: 0,
-            },
-            txdata: vec![Transaction {
-                version: bitcoin::transaction::Version::non_standard(1),
-                lock_time: bitcoin::absolute::LockTime::ZERO,
-                input: vec![bitcoin::blockdata::transaction::TxIn {
-                    previous_output: bitcoin::OutPoint::null(),
-                    script_sig: bitcoin::ScriptBuf::new(),
-                    sequence: bitcoin::Sequence::MAX,
-                    witness: bitcoin::Witness::new(),
-                }],
-                output: vec![bitcoin::blockdata::transaction::TxOut {
-                    value: bitcoin::Amount::from_sat(1000),
-                    script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51]),
-                }],
-            }],
-        };
-        let fund_txid = fund_block.txdata[0].compute_txid();
-        indexer
-            .state
-            .write()
-            .expect("write lock")
-            .apply_block(&fund_block, 1)
-            .expect("apply fund");
 
         let target_script = bitcoin::ScriptBuf::from_bytes(vec![0x52]);
         let tx = Transaction {
             version: bitcoin::transaction::Version::non_standard(1),
             lock_time: bitcoin::absolute::LockTime::ZERO,
             input: vec![bitcoin::blockdata::transaction::TxIn {
-                previous_output: bitcoin::OutPoint::new(fund_txid, 0),
+                previous_output: prevout,
                 script_sig: bitcoin::ScriptBuf::new(),
                 sequence: bitcoin::Sequence::MAX,
                 witness: bitcoin::Witness::new(),
