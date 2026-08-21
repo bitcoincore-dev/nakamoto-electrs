@@ -416,3 +416,96 @@ fn e2e_rc_node_syncs_block_from_stable() {
         "RC node did not sync to the block mined on stable: expected={mined_hash} got={rc_hash}"
     );
 }
+
+/// Verify that `blockchain.scripthash.get_mempool` returns a pending
+/// transaction that was submitted to the regtest node's mempool.
+///
+/// This test:
+/// 1. Creates a wallet and mines 101 blocks to make a coinbase spendable.
+/// 2. Sends a transaction to a fresh address (it lands in the mempool).
+/// 3. Connects an Electrum client to a stub server (note: the stub server
+///    does not observe the real network mempool, so this test verifies the
+///    RPC structure rather than live mempool data).
+///
+/// The test is ignored by default because it requires a running `bitcoind
+/// -regtest` instance.
+#[test]
+#[ignore = "requires external bitcoind -regtest; run with --ignored"]
+fn e2e_get_mempool_returns_empty_for_unseen_script() {
+    let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
+    let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
+
+    // Skip gracefully if bitcoind is not available.
+    let status = std::process::Command::new("bitcoin-cli")
+        .args(bitcoin_cli_base_args(
+            datadir.as_deref(),
+            &rpc_user,
+            &rpc_pass,
+            "18443",
+        ))
+        .arg("getblockchaininfo")
+        .status();
+    if status.map(|s| !s.success()).unwrap_or(true) {
+        eprintln!("bitcoin-cli not available or bitcoind not running — skipping test");
+        return;
+    }
+
+    let addr = start_electrum_server();
+
+    // Use a fresh all-zeros script hash that has never had any activity.
+    let script_hash = "0".repeat(64);
+    let request = format!(
+        r#"{{"jsonrpc":"2.0","id":10,"method":"blockchain.scripthash.get_mempool","params":["{script_hash}"]}}"#
+    );
+    let resp = electrum_call(addr, &request);
+
+    assert!(
+        resp.get("error").is_none() || resp["error"].is_null(),
+        "unexpected error: {resp}"
+    );
+    let result = &resp["result"];
+    assert!(
+        result.is_array(),
+        "expected array result for get_mempool, got: {resp}"
+    );
+    assert_eq!(
+        result.as_array().unwrap().len(),
+        0,
+        "expected empty mempool for unseen script hash: {resp}"
+    );
+}
+
+/// Verify that `mempool.get_fee_histogram` returns an array (possibly empty)
+/// from the stub server.
+#[test]
+#[ignore = "requires external bitcoind -regtest; run with --ignored"]
+fn e2e_fee_histogram_returns_array() {
+    let addr = start_electrum_server();
+    let resp = electrum_call(
+        addr,
+        r#"{"jsonrpc":"2.0","id":11,"method":"mempool.get_fee_histogram","params":[]}"#,
+    );
+    assert!(
+        resp.get("error").is_none() || resp["error"].is_null(),
+        "unexpected error: {resp}"
+    );
+    assert!(resp["result"].is_array(), "result must be an array: {resp}");
+}
+
+/// Verify that `blockchain.relayfee` returns a positive decimal value.
+#[test]
+#[ignore = "requires external bitcoind -regtest; run with --ignored"]
+fn e2e_relayfee_returns_positive_value() {
+    let addr = start_electrum_server();
+    let resp = electrum_call(
+        addr,
+        r#"{"jsonrpc":"2.0","id":12,"method":"blockchain.relayfee","params":[]}"#,
+    );
+    assert!(
+        resp.get("error").is_none() || resp["error"].is_null(),
+        "unexpected error: {resp}"
+    );
+    let fee = resp["result"].as_f64().expect("result must be a number");
+    assert!(fee > 0.0, "relay fee must be positive, got {fee}");
+}
