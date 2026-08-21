@@ -318,4 +318,89 @@ mod tests {
         assert_eq!(Level::from(LevelArg::Debug), Level::DEBUG);
         assert_eq!(Level::from(LevelArg::Trace), Level::TRACE);
     }
+
+    // ---- NakamotoConfig::new ----------------------------------------------
+
+    #[test]
+    fn nakamoto_config_new_has_correct_network() {
+        assert_eq!(NakamotoConfig::new(Network::Mainnet).network, Network::Mainnet);
+        assert_eq!(NakamotoConfig::new(Network::Signet).network, Network::Signet);
+    }
+
+    #[test]
+    fn nakamoto_config_new_has_empty_peers() {
+        assert!(NakamotoConfig::new(Network::Testnet).nakamoto_peers.is_empty());
+    }
+
+    #[test]
+    fn nakamoto_config_index_dir_contains_network_name() {
+        let cfg = NakamotoConfig::new(Network::Signet);
+        assert!(cfg.index_dir.to_string_lossy().contains("signet"));
+
+        let cfg = NakamotoConfig::new(Network::Mainnet);
+        assert!(cfg.index_dir.to_string_lossy().contains("mainnet"));
+    }
+
+    #[test]
+    fn nakamoto_config_default_log_level_is_info() {
+        assert_eq!(NakamotoConfig::new(Network::Testnet).log_level, Level::INFO);
+    }
+
+    // ---- Config::new for all networks ------------------------------------
+
+    #[test]
+    fn config_new_signet_port() {
+        let cfg = Config::new(Network::Signet);
+        assert_eq!(cfg.electrum_listen_addr.port(), 60601);
+    }
+
+    #[test]
+    fn config_new_regtest_port() {
+        let cfg = Config::new(Network::Regtest);
+        assert_eq!(cfg.electrum_listen_addr.port(), 60401);
+    }
+
+    // ---- CLI: custom listen / peer args ----------------------------------
+
+    #[test]
+    fn cli_custom_listen_address_is_used() {
+        let cli = Cli::parse_from([
+            "nakamoto-electrs",
+            "--network", "regtest",
+            "--listen", "127.0.0.1:19999",
+        ]);
+        match cli.into_mode() {
+            Mode::Bridge(cfg) => assert_eq!(cfg.electrum_listen_addr.port(), 19999),
+            _ => panic!("expected bridge mode"),
+        }
+    }
+
+    #[test]
+    fn cli_custom_peers_are_forwarded() {
+        let cli = Cli::parse_from([
+            "nakamoto-electrs",
+            "--network", "regtest",
+            "--peer", "127.0.0.1:18444",
+            "--peer", "127.0.0.1:18445",
+        ]);
+        match cli.into_mode() {
+            Mode::Bridge(cfg) => assert_eq!(cfg.nakamoto_peers.len(), 2),
+            _ => panic!("expected bridge mode"),
+        }
+    }
+
+    #[test]
+    fn cli_network_arg_all_variants_convert_to_network() {
+        use clap::Parser;
+        for (arg, expected) in [
+            ("mainnet", Network::Mainnet),
+            ("testnet", Network::Testnet),
+            ("signet", Network::Signet),
+            ("regtest", Network::Regtest),
+        ] {
+            let cli = Cli::parse_from(["nakamoto-electrs", "--network", arg]);
+            let network: Network = cli.network.into();
+            assert_eq!(network, expected, "failed for {arg}");
+        }
+    }
 }

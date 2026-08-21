@@ -85,29 +85,51 @@ pub struct MempoolEntry {
     pub fee: u64,
 }
 
+/// In-memory index state, backed by a [`PersistentIndex`] store.
+///
+/// The `history` and `by_height` caches are rebuilt from the store on every
+/// startup.  The `pending_*` maps track unconfirmed (mempool) transactions
+/// that are not yet in any block.
 struct IndexState {
+    /// Confirmed transaction history, keyed by script hash.
     history: HashMap<ScriptHash, Vec<TxEntry>>,
+    /// Per-block journal actions, keyed by block height.  Used to roll back
+    /// a block in O(1) by replaying its actions in reverse.
     by_height: HashMap<u32, Vec<BlockAction>>,
+    /// Unconfirmed transactions currently in the mempool view, keyed by txid.
     pending_txs: HashMap<Txid, Transaction>,
+    /// Unconfirmed UTXOs that are outputs of `pending_txs` and have not yet
+    /// been spent by another pending transaction.  Rebuilt from scratch
+    /// whenever `pending_txs` changes via [`IndexState::rebuild_pending_view`].
     pending_outputs: HashMap<OutPoint, StoredOutput>,
+    /// Best-chain tip height as last seen by `apply_block`.
     tip_height: u32,
+    /// Persistent on-disk store.
     store: PersistentIndex,
 }
 
+/// A single undo record written into the per-block journal.
+///
+/// On block connect each record is appended in order; on disconnect the
+/// records are replayed in reverse so every store mutation can be undone.
 #[derive(Debug, Clone)]
 enum BlockAction {
+    /// A transaction was mined in this block.
     Tx {
         txid: Txid,
         journal_key: Vec<u8>,
     },
+    /// A history entry (fund or spend) was added for a script hash.
     History {
         history_key: Vec<u8>,
         journal_key: Vec<u8>,
     },
+    /// An output was stored as a UTXO.
     Output {
         outpoint: OutPoint,
         journal_key: Vec<u8>,
     },
+    /// A UTXO was removed because it was spent.
     Spend {
         outpoint: OutPoint,
         journal_key: Vec<u8>,
@@ -115,6 +137,8 @@ enum BlockAction {
 }
 
 impl IndexState {
+    /// Open (or create) the persistent index at `index_dir` and rebuild all
+    /// in-memory caches from the stored data.
     fn new(index_dir: PathBuf) -> Result<Self> {
         let store = PersistentIndex::open(index_dir)?;
         let tip_height = store.tip_height();
@@ -133,6 +157,7 @@ impl IndexState {
         Ok(state)
     }
 
+    /// Populate `self.history` from the persistent history entries.
     fn load_history_from_store(&mut self) -> Result<()> {
         for entry in self.store.load_history_entries()? {
             self.history
@@ -147,6 +172,10 @@ impl IndexState {
         Ok(())
     }
 
+    /// Populate `self.by_height` from the persistent journal.
+    ///
+    /// Returns the set of txids that already have confirmed journal entries so
+    /// that [`load_pending_from_store`] can skip them.
     fn load_journal_from_store(&mut self) -> Result<std::collections::HashSet<Txid>> {
         let mut confirmed_txids = std::collections::HashSet::new();
         for action in self.store.load_journal_actions()? {
@@ -180,6 +209,10 @@ impl IndexState {
         Ok(confirmed_txids)
     }
 
+    /// Restore `self.pending_txs` from the persistent pending-txid list.
+    ///
+    /// Any txid that already appears in `confirmed_txids` is skipped — it was
+    /// confirmed in the last indexed block and should not be treated as pending.
     fn load_pending_from_store(
         &mut self,
         confirmed_txids: &std::collections::HashSet<Txid>,
@@ -195,6 +228,13 @@ impl IndexState {
         Ok(())
     }
 
+    /// Recompute `self.pending_outputs` from scratch.
+    ///
+    /// An output of a pending transaction is included in `pending_outputs` only
+    /// when it is *not* already spent by another pending transaction.  This
+    /// gives a live unspent-output view of the current mempool.
+    ///
+    /// This method must be called after any mutation of `self.pending_txs`.
     fn rebuild_pending_view(&mut self) {
         use std::collections::HashSet;
 
@@ -231,6 +271,11 @@ impl IndexState {
         }
     }
 
+    /// Add `tx` to the pending mempool view.
+    ///
+    /// Any existing pending transaction that spends the same inputs (i.e. an
+    /// RBF conflict) and its entire descendant chain are evicted first.
+    /// Returns the set of script hashes whose mempool status changed.
     fn track_pending_transaction_internal(&mut self, tx: &Transaction) -> Result<Vec<ScriptHash>> {
         use std::collections::HashSet;
 
@@ -247,12 +292,21 @@ impl IndexState {
         Ok(affected.into_iter().collect())
     }
 
+    /// Remove a single pending transaction without cascading to descendants.
+    ///
+    /// Called by [`apply_block`] when a transaction is confirmed so it is no
+    /// longer treated as pending.
     fn forget_pending_transaction_internal(&mut self, txid: &Txid) {
         self.pending_txs.remove(txid);
         let _ = self.store.delete_pending_txid(txid);
         self.rebuild_pending_view();
     }
 
+    /// Remove a pending transaction and every transaction that descends from it
+    /// (i.e. directly or indirectly spends one of its outputs).
+    ///
+    /// Returns the union of all script hashes whose mempool status changed.
+    /// Used when a transaction is replaced (RBF) or goes stale.
     fn forget_pending_transaction_chain_internal(&mut self, txid: &Txid) -> Vec<ScriptHash> {
         use std::collections::{HashSet, VecDeque};
 
@@ -296,6 +350,11 @@ impl IndexState {
         affected.into_iter().collect()
     }
 
+    /// Re-add a previously stored transaction to the pending mempool view.
+    ///
+    /// Returns `None` when the transaction is not found in the store (it was
+    /// never broadcast through this node).  On success returns the set of
+    /// affected script hashes, just like [`track_pending_transaction_internal`].
     fn restore_pending_transaction(&mut self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
         let Some(tx) = self.store.load_tx(txid)? else {
             return Ok(None);
@@ -303,6 +362,11 @@ impl IndexState {
         Ok(Some(self.track_pending_transaction_internal(&tx)?))
     }
 
+    /// Return unconfirmed history entries for `sh`.
+    ///
+    /// Each pending transaction that touches `sh` contributes one entry with
+    /// `height = 0`.  This is used to construct the combined confirmed +
+    /// unconfirmed history returned by `get_history`.
     fn pending_history_for_script(&self, sh: &ScriptHash) -> Vec<TxEntry> {
         let mut out = Vec::new();
 
@@ -319,6 +383,20 @@ impl IndexState {
         out
     }
 
+    /// Build the [`MempoolEntry`] list for `sh` as required by the Electrum
+    /// `blockchain.scripthash.get_mempool` RPC.
+    ///
+    /// For each pending transaction that touches `sh` we compute:
+    ///
+    /// * **`height`** — `0` when every input spends a confirmed UTXO; `-1`
+    ///   when at least one input spends another unconfirmed output (i.e. a
+    ///   child-pays-for-parent chain).
+    /// * **`fee`** — `input_value − output_value` in satoshis.  When an input
+    ///   spends an output whose value cannot be looked up (unknown prevout) the
+    ///   contribution of that input is treated as zero, so the fee may be
+    ///   under-reported.
+    ///
+    /// The result is sorted by txid string for a stable, deterministic order.
     fn pending_mempool_for_script(&self, sh: &ScriptHash) -> Result<Vec<MempoolEntry>> {
         use std::collections::HashSet;
 
@@ -358,6 +436,11 @@ impl IndexState {
         Ok(out)
     }
 
+    /// Return all script hashes that would have their mempool status changed if
+    /// `tx` were added or removed.
+    ///
+    /// This walks the pending transaction graph transitively so that ancestor
+    /// and descendant scripts are also included in subscription notifications.
     fn pending_affected_scripts_for_tx(&self, tx: &Transaction) -> Vec<ScriptHash> {
         use std::collections::{HashSet, VecDeque};
 
@@ -408,6 +491,11 @@ impl IndexState {
         touched.into_iter().collect()
     }
 
+    /// Return the txids of pending transactions that conflict with `tx`.
+    ///
+    /// A conflict is any pending transaction that spends at least one of the
+    /// same outpoints as `tx` (i.e. a double-spend / RBF candidate), excluding
+    /// `tx` itself as an ancestor of its own inputs.
     fn pending_conflicting_txids(&self, tx: &Transaction) -> Vec<Txid> {
         use std::collections::HashSet;
 
@@ -433,6 +521,8 @@ impl IndexState {
             .collect()
     }
 
+    /// Return `true` when `tx` has an input that spends from `sh` or an output
+    /// that pays to `sh`.
     fn pending_tx_touches_script(&self, tx: &Transaction, sh: &ScriptHash) -> bool {
         for input in &tx.input {
             let prevout = input.previous_output;
@@ -451,6 +541,8 @@ impl IndexState {
             .any(|output| &ScriptHash::from_script(&output.script_pubkey) == sh)
     }
 
+    /// Resolve `outpoint` to its script hash, checking `pending_outputs` first
+    /// and then falling back to the persistent store.
     fn script_hash_for_outpoint(&self, outpoint: &OutPoint) -> Result<Option<ScriptHash>> {
         if let Some(output) = self.pending_output_for_outpoint(outpoint) {
             return Ok(Some(output.script_hash));
@@ -461,6 +553,12 @@ impl IndexState {
             .map(|output| output.script_hash))
     }
 
+    /// Look up `outpoint` in the pending mempool view.
+    ///
+    /// Checks the pre-built `pending_outputs` index first (which only contains
+    /// *unspent* outputs of pending transactions) and falls back to scanning
+    /// `pending_txs` directly for outputs that are spent within the same
+    /// mempool chain.
     fn pending_output_for_outpoint(&self, outpoint: &OutPoint) -> Option<StoredOutput> {
         self.pending_outputs.get(outpoint).copied().or_else(|| {
             self.pending_txs
@@ -476,6 +574,12 @@ impl IndexState {
         })
     }
 
+    /// Compute the net balance change for `sh` due to unconfirmed transactions.
+    ///
+    /// Positive values mean pending inflows exceed pending outflows; negative
+    /// values mean more confirmed UTXOs are being spent than are being received.
+    /// This is the value returned by `blockchain.scripthash.get_balance` in the
+    /// `unconfirmed` field.
     fn unconfirmed_balance_delta_for_script(&self, sh: &ScriptHash) -> Result<i64> {
         use std::collections::HashSet;
 
@@ -511,6 +615,9 @@ impl IndexState {
         Ok(delta)
     }
 
+    /// Apply a connected block, updating history, the UTXO set, and the
+    /// persistent store.  Any pending transactions that are confirmed by this
+    /// block are removed from the mempool view.
     fn apply_block(&mut self, block: &Block, height: u32) -> Result<()> {
         let mut sequence = 0u32;
         for tx in &block.txdata {
@@ -636,6 +743,8 @@ impl IndexState {
         Ok(())
     }
 
+    /// Undo every store action that was applied at `height`, restoring the
+    /// UTXO set and history to the state just before that block was connected.
     fn rollback_height(&mut self, height: u32) -> Result<()> {
         if let Some(entries) = self.by_height.remove(&height) {
             for action in entries.into_iter().rev() {
@@ -694,6 +803,8 @@ impl IndexState {
         Ok(())
     }
 
+    /// Return the combined confirmed + unconfirmed history for `sh`, sorted by
+    /// height (unconfirmed entries sort last), then sequence, then txid.
     fn get_history(&self, sh: &ScriptHash) -> Vec<TxEntry> {
         let mut entries = self.history.get(sh).cloned().unwrap_or_default();
         entries.extend(self.pending_history_for_script(sh));
@@ -707,6 +818,7 @@ impl IndexState {
         entries
     }
 
+    /// Return `true` when `sh` has any confirmed history.
     fn has_history(&self, sh: &ScriptHash) -> bool {
         self.history.contains_key(sh)
     }
@@ -715,30 +827,38 @@ impl IndexState {
         self.tip_height
     }
 
+    /// Load a raw transaction from the persistent store.
     fn get_transaction(&self, txid: &Txid) -> Result<Option<Transaction>> {
         self.store.load_tx(txid)
     }
 
+    /// Persist a raw transaction to the store without adding it to the pending
+    /// view.  Used to cache transactions that may need to be restored later.
     fn store_transaction(&self, tx: &Transaction) -> Result<()> {
         self.store.store_tx(tx)
     }
 
+    /// Return the confirmed balance (sum of confirmed UTXOs) for `sh`.
     fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.store.balance_for_script(sh)
     }
 
+    /// Return the net unconfirmed balance delta for `sh`.
     fn get_unconfirmed_balance_delta(&self, sh: &ScriptHash) -> Result<i64> {
         self.unconfirmed_balance_delta_for_script(sh)
     }
 
+    /// Return confirmed UTXOs for `sh` from the persistent store.
     fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
         self.store.list_unspent_for_script(sh)
     }
 
+    /// Return pending mempool entries for `sh`.
     fn mempool(&self, sh: &ScriptHash) -> Result<Vec<MempoolEntry>> {
         self.pending_mempool_for_script(sh)
     }
 
+    /// Return unspent outputs from `pending_txs` that pay to `sh`.
     fn pending_unspent_for_script(&self, sh: &ScriptHash) -> Vec<StoredUnspent> {
         self.pending_outputs
             .values()
@@ -752,6 +872,10 @@ impl IndexState {
             .collect()
     }
 
+    /// Return all outpoints that are spent by pending transactions.
+    ///
+    /// Used by [`Indexer::list_unspent`] to filter confirmed UTXOs that have
+    /// already been consumed in the mempool.
     fn pending_spent_outpoints(&self) -> std::collections::HashSet<OutPoint> {
         let mut spent = std::collections::HashSet::new();
         for tx in self.pending_txs.values() {
@@ -766,6 +890,11 @@ impl IndexState {
     }
 }
 
+/// Extract the 4-byte sequence number embedded in a `journal_key`.
+///
+/// Journal keys are prefixed with a height (4 bytes) followed by a sequence
+/// number (4 bytes).  The sequence number is used to restore the original
+/// insertion order when replaying or rolling back a block.
 fn action_sequence(action: &BlockAction) -> u32 {
     match action {
         BlockAction::Tx { journal_key, .. }
@@ -779,6 +908,7 @@ fn action_sequence(action: &BlockAction) -> u32 {
     }
 }
 
+/// Deserialise a 32-byte txid from a raw journal payload.
 fn parse_txid(payload: &[u8]) -> Result<Txid> {
     let bytes: [u8; 32] = payload
         .try_into()
@@ -786,6 +916,8 @@ fn parse_txid(payload: &[u8]) -> Result<Txid> {
     Ok(Txid::from_byte_array(bytes))
 }
 
+/// Deserialise a 36-byte outpoint (32-byte txid + 4-byte big-endian vout)
+/// from a raw journal payload.
 fn parse_outpoint(payload: &[u8]) -> Result<OutPoint> {
     if payload.len() != 36 {
         anyhow::bail!("invalid outpoint payload length: {}", payload.len());
@@ -800,6 +932,7 @@ fn parse_outpoint(payload: &[u8]) -> Result<OutPoint> {
     ))
 }
 
+/// Serialise an outpoint to the 36-byte format used in journal payloads.
 fn outpoint_bytes(outpoint: &OutPoint) -> [u8; 36] {
     let mut bytes = [0u8; 36];
     bytes[0..32].copy_from_slice(outpoint.txid.as_byte_array());
@@ -904,6 +1037,12 @@ impl Indexer {
             .get_transaction(txid)
     }
 
+    /// Persist a raw transaction to the store without adding it to the pending
+    /// mempool view.
+    ///
+    /// This allows a transaction to be stored so it can be restored later via
+    /// [`Indexer::restore_pending_transaction`] if, for example, the Nakamoto peer
+    /// reports that it was reverted.
     pub fn store_transaction(&self, tx: &Transaction) -> Result<()> {
         self.state
             .read()
@@ -911,6 +1050,12 @@ impl Indexer {
             .store_transaction(tx)
     }
 
+    /// Add `tx` to the pending mempool view, evicting any conflicting
+    /// transactions and their descendants first (RBF semantics).
+    ///
+    /// The transaction is also persisted to the store so it survives restarts.
+    /// Returns the set of script hashes whose mempool status changed; these
+    /// should be used to send subscription notifications to connected clients.
     pub fn track_pending_transaction(&self, tx: &Transaction) -> Result<Vec<ScriptHash>> {
         self.state
             .write()
@@ -918,6 +1063,11 @@ impl Indexer {
             .track_pending_transaction_internal(tx)
     }
 
+    /// Re-add a previously stored transaction to the active pending mempool
+    /// view.
+    ///
+    /// Returns `None` when the transaction cannot be found in the persistent
+    /// store.  On success returns the affected script hashes.
     pub fn restore_pending_transaction(&self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
         self.state
             .write()
@@ -925,6 +1075,11 @@ impl Indexer {
             .restore_pending_transaction(txid)
     }
 
+    /// Remove a single pending transaction from the mempool view without
+    /// cascading to its descendants.
+    ///
+    /// Returns `None` when the txid is not currently pending.  Used when a
+    /// transaction is confirmed in a block (descendants may still be pending).
     pub fn forget_pending_transaction(&self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
         let mut state = self.state.write().expect("index write lock poisoned");
         let Some(tx) = state.pending_txs.remove(txid) else {
@@ -936,6 +1091,12 @@ impl Indexer {
         Ok(Some(affected))
     }
 
+    /// Remove a pending transaction and all of its descendants from the mempool
+    /// view.
+    ///
+    /// Returns `None` when the root txid is not currently pending.  Used when a
+    /// transaction is replaced (RBF) or goes stale so the entire dependent
+    /// chain is invalid.
     pub fn forget_pending_transaction_chain(&self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
         let mut state = self.state.write().expect("index write lock poisoned");
         if !state.pending_txs.contains_key(txid) {
@@ -945,6 +1106,7 @@ impl Indexer {
         Ok(Some(affected))
     }
 
+    /// Return the confirmed balance for `sh` (sum of confirmed UTXOs).
     pub fn get_balance(&self, sh: &ScriptHash) -> Result<u64> {
         self.state
             .read()
@@ -952,6 +1114,11 @@ impl Indexer {
             .get_balance(sh)
     }
 
+    /// Return the net unconfirmed balance delta for `sh`.
+    ///
+    /// A positive value means the script hash is receiving more in the mempool
+    /// than it is spending; a negative value means confirmed UTXOs are being
+    /// spent by pending transactions that pay to other scripts.
     pub fn get_unconfirmed_balance_delta(&self, sh: &ScriptHash) -> Result<i64> {
         self.state
             .read()
@@ -959,6 +1126,10 @@ impl Indexer {
             .get_unconfirmed_balance_delta(sh)
     }
 
+    /// Return the combined confirmed and unconfirmed UTXOs for `sh`.
+    ///
+    /// Confirmed UTXOs that are already spent by pending transactions are
+    /// filtered out, and unspent pending outputs are appended.
     pub fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
         let state = self.state.read().expect("index read lock poisoned");
         let spent = state.pending_spent_outpoints();
@@ -973,6 +1144,12 @@ impl Indexer {
         Ok(out)
     }
 
+    /// Return the pending mempool entries for `sh`.
+    ///
+    /// Each entry describes an unconfirmed transaction that pays to or spends
+    /// from `sh`, including its estimated fee and whether any of its inputs are
+    /// also unconfirmed.  This is the data returned by the Electrum
+    /// `blockchain.scripthash.get_mempool` RPC.
     pub fn get_mempool(&self, sh: &ScriptHash) -> Result<Vec<MempoolEntry>> {
         self.state
             .read()
@@ -999,6 +1176,53 @@ mod tests {
         },
         hash_types::TxMerkleNode,
     };
+
+    // ---- ScriptHash public API --------------------------------------------
+
+    #[test]
+    fn script_hash_from_raw_bytes_round_trips_as_bytes() {
+        let raw = [0xABu8; 32];
+        let sh = ScriptHash::from_raw_bytes(raw);
+        assert_eq!(sh.as_bytes(), &raw);
+    }
+
+    #[test]
+    fn script_hash_to_hex_is_64_lowercase_hex_chars() {
+        let sh = ScriptHash::from_raw_bytes([0xFFu8; 32]);
+        let hex = sh.to_hex();
+        assert_eq!(hex.len(), 64);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(hex, "ff".repeat(32));
+    }
+
+    #[test]
+    fn script_hash_display_matches_to_hex() {
+        let sh = ScriptHash::from_raw_bytes([0x1Au8; 32]);
+        assert_eq!(format!("{sh}"), sh.to_hex());
+    }
+
+    #[test]
+    fn same_script_yields_equal_script_hashes() {
+        let script = Builder::from(vec![0x51u8]).into_script();
+        assert_eq!(ScriptHash::from_script(&script), ScriptHash::from_script(&script));
+    }
+
+    #[test]
+    fn different_scripts_yield_different_script_hashes() {
+        let a = Builder::from(vec![0x51u8]).into_script();
+        let b = Builder::from(vec![0x52u8]).into_script();
+        assert_ne!(ScriptHash::from_script(&a), ScriptHash::from_script(&b));
+    }
+
+    #[test]
+    fn script_hash_from_script_is_reversed_sha256() {
+        use bitcoin::hashes::sha256;
+        let script = Builder::from(vec![0x51u8]).into_script();
+        let digest = sha256::Hash::hash(script.as_bytes());
+        let mut expected: [u8; 32] = *digest.as_ref();
+        expected.reverse();
+        assert_eq!(ScriptHash::from_script(&script), ScriptHash::from_raw_bytes(expected));
+    }
 
     fn make_state() -> IndexState {
         let dir = tempfile::tempdir().expect("temp dir").keep();

@@ -47,16 +47,25 @@ use crate::block_source::BlockSource;
 use crate::indexer::{Indexer, MempoolEntry, ScriptHash, TxEntry};
 use crate::metrics::Metrics;
 
+/// Implemented by objects that can broadcast a raw Bitcoin transaction to the
+/// peer-to-peer network.
 pub trait TransactionBroadcaster: Send + Sync {
     fn broadcast_transaction(&self, tx: Transaction) -> Result<(), String>;
 }
 
+/// Distributes mempool-change notifications to per-client subscriber channels.
+///
+/// When `track_pending_transaction` (or any related eviction) changes the set
+/// of pending transactions, the affected script hashes are sent through this
+/// broadcaster so that each connected client can push subscription updates to
+/// its subscriber without going through the main indexer lock again.
 #[derive(Clone, Default)]
 pub struct PendingChangeBroadcaster {
     senders: Arc<Mutex<Vec<CbSender<Vec<ScriptHash>>>>>,
 }
 
 impl PendingChangeBroadcaster {
+    /// Register a new subscriber.  Returns the receive end of the channel.
     fn subscribe(&self) -> CbReceiver<Vec<ScriptHash>> {
         let (tx, rx) = unbounded();
         self.senders
@@ -66,12 +75,19 @@ impl PendingChangeBroadcaster {
         rx
     }
 
+    /// Send `affected` to every live subscriber, dropping any whose channel
+    /// has been closed.
     fn broadcast(&self, affected: Vec<ScriptHash>) {
         let mut guard = self.senders.lock().expect("pending change lock poisoned");
         guard.retain(|tx| tx.send(affected.clone()).is_ok());
     }
 }
 
+/// Process a transaction-status event from the Nakamoto peer, updating the
+/// pending mempool view and notifying subscribers of any affected scripts.
+///
+/// This is the bridge between the Nakamoto `FilterClient` event stream and the
+/// Electrum subscription machinery.
 pub(crate) fn apply_tx_status_change(
     indexer: &Indexer,
     pending_changes: &PendingChangeBroadcaster,
@@ -82,15 +98,24 @@ pub(crate) fn apply_tx_status_change(
     apply_tx_status_kind(indexer, pending_changes, &txid, classify_tx_status(status))
 }
 
+/// How a transaction-status string from the Nakamoto peer should be handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TxStatusKind {
+    /// The transaction was reverted; restore it to the pending view.
     Reverted,
+    /// The transaction was included in a block; remove it from the pending view.
     Confirmed,
+    /// The transaction was replaced (RBF); remove it and its entire descendant
+    /// chain from the pending view.
     Stale,
+    /// The transaction was acknowledged by a peer; no action needed.
     Acknowledged,
+    /// An unrecognised status string; ignore it.
     Other,
 }
 
+/// Apply a classified transaction-status action against the indexer, returning
+/// the set of affected script hashes via `pending_changes` if any.
 fn apply_tx_status_kind(
     indexer: &Indexer,
     pending_changes: &PendingChangeBroadcaster,
@@ -111,6 +136,7 @@ fn apply_tx_status_kind(
     Ok(())
 }
 
+/// Classify a raw transaction-status string into a [`TxStatusKind`].
 fn classify_tx_status(status: &str) -> TxStatusKind {
     if status == "transaction has been reverted" {
         TxStatusKind::Reverted
@@ -125,20 +151,29 @@ fn classify_tx_status(status: &str) -> TxStatusKind {
     }
 }
 
+/// Tracks the most recently seen fee rate reported by the Nakamoto peer.
+///
+/// Stored atomically so the Electrum server can read it without holding any
+/// lock.  A value of `0` means no estimate has been received yet, which is
+/// reported to clients as `-1` per the Electrum protocol spec.
 #[derive(Debug, Default)]
 pub struct FeeRateState {
     sat_per_vb: AtomicU64,
 }
 
 impl FeeRateState {
+    /// Create a new [`FeeRateState`] with no initial estimate.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Record a new fee-rate estimate in sat/vbyte.
     pub fn update_sat_per_vb(&self, sat_per_vb: u64) {
         self.sat_per_vb.store(sat_per_vb, Ordering::Relaxed);
     }
 
+    /// Return the current fee estimate, or `None` when no estimate has been
+    /// received yet.
     pub fn current_sat_per_vb(&self) -> Option<u64> {
         match self.sat_per_vb.load(Ordering::Relaxed) {
             0 => None,
@@ -542,12 +577,15 @@ fn dispatch_request<S: BlockSource>(
 // Individual method handlers
 // ---------------------------------------------------------------------------
 
+/// Handle `server.version` — return the server and protocol version strings.
 fn handle_server_version(params: &Value) -> std::result::Result<Value, String> {
     // Params: [client_name, protocol_version]  (both optional in our impl)
     let _client = params.get(0).and_then(Value::as_str).unwrap_or("unknown");
     Ok(json!([SERVER_VERSION, PROTOCOL_VERSION]))
 }
 
+/// Handle `blockchain.headers.subscribe` — register the client for header
+/// notifications and return the current tip header.
 fn handle_headers_subscribe<S: BlockSource>(
     state: &mut ClientState,
     indexer: &Indexer,
@@ -563,6 +601,8 @@ fn handle_headers_subscribe<S: BlockSource>(
     })
 }
 
+/// Handle `blockchain.scripthash.get_history` — return the confirmed and
+/// unconfirmed transaction history for a script hash.
 fn handle_scripthash_get_history(
     params: &Value,
     indexer: &Indexer,
@@ -581,6 +621,8 @@ fn handle_scripthash_get_history(
     Ok(Value::Array(list))
 }
 
+/// Handle `blockchain.scripthash.get_balance` — return the confirmed and
+/// unconfirmed balances for a script hash.
 fn handle_scripthash_get_balance(
     params: &Value,
     indexer: &Indexer,
@@ -598,6 +640,12 @@ fn handle_scripthash_get_balance(
     }))
 }
 
+/// Handle `blockchain.scripthash.get_mempool` — return the unconfirmed
+/// transactions for a script hash as an array of `{tx_hash, height, fee}`
+/// objects.
+///
+/// `height` is `0` when all inputs of the transaction are confirmed, and `-1`
+/// when at least one input is also unconfirmed (CPFP chain).
 fn handle_scripthash_get_mempool(
     params: &Value,
     indexer: &Indexer,
@@ -620,6 +668,8 @@ fn handle_scripthash_get_mempool(
     ))
 }
 
+/// Handle `blockchain.scripthash.listunspent` — return the unspent outputs
+/// (both confirmed and pending) for a script hash.
 fn handle_scripthash_listunspent(
     params: &Value,
     indexer: &Indexer,
@@ -643,6 +693,11 @@ fn handle_scripthash_listunspent(
     ))
 }
 
+/// Handle `blockchain.scripthash.subscribe` — register the client for
+/// status-change notifications for a script hash and return its current status.
+///
+/// The status is a SHA-256 hex string computed from the combined confirmed and
+/// unconfirmed history, or `null` when the script hash has no activity.
 fn handle_scripthash_subscribe(
     params: &Value,
     state: &mut ClientState,
@@ -660,6 +715,7 @@ fn handle_scripthash_subscribe(
     })
 }
 
+/// Handle `blockchain.transaction.get` — return a raw transaction as hex.
 fn handle_transaction_get(params: &Value, indexer: &Indexer) -> std::result::Result<Value, String> {
     let txid_str = params
         .get(0)
@@ -673,6 +729,11 @@ fn handle_transaction_get(params: &Value, indexer: &Indexer) -> std::result::Res
     }
 }
 
+/// Handle `blockchain.transaction.broadcast` — deserialise, broadcast, and
+/// cache the raw transaction, then return its txid.
+///
+/// Only available in bridge mode (when a `TransactionBroadcaster` is
+/// configured).  Returns an error in watch-only mode.
 fn handle_transaction_broadcast(
     params: &Value,
     metrics: &Metrics,
@@ -705,6 +766,8 @@ fn handle_transaction_broadcast(
     }
 }
 
+/// Handle `blockchain.estimatefee` — return the current fee estimate in
+/// BTC/kVB, or `-1` when no estimate is available yet.
 fn handle_estimatefee(
     params: &Value,
     fee_rate: &Arc<FeeRateState>,
@@ -720,6 +783,7 @@ fn handle_estimatefee(
     }
 }
 
+/// Handle `blockchain.block.header` — return a single block header as hex.
 fn handle_block_header<S: BlockSource>(
     params: &Value,
     source: &S,
@@ -735,6 +799,8 @@ fn handle_block_header<S: BlockSource>(
     }
 }
 
+/// Handle `blockchain.block.headers` — return a contiguous range of block
+/// headers concatenated as a single hex string.
 fn handle_block_headers<S: BlockSource>(
     params: &Value,
     source: &S,
@@ -767,6 +833,7 @@ fn handle_block_headers<S: BlockSource>(
 // Parameter helpers
 // ---------------------------------------------------------------------------
 
+/// Parse a 64-character hex script hash from the first element of `params`.
 fn parse_scripthash(params: &Value) -> std::result::Result<ScriptHash, String> {
     let hex_str = params
         .get(0)
@@ -788,12 +855,20 @@ fn parse_scripthash(params: &Value) -> std::result::Result<ScriptHash, String> {
     Ok(ScriptHash::from_raw_bytes(bytes))
 }
 
+/// Compute the current Electrum status for `sh` by combining confirmed history
+/// and unconfirmed mempool entries.
 fn script_status(indexer: &Indexer, sh: &ScriptHash) -> Result<Option<String>> {
     let history = indexer.get_history(sh);
     let mempool = indexer.get_mempool(sh)?;
     Ok(compute_status_hash(&history, &mempool))
 }
 
+/// Compute the Electrum script-hash status string from confirmed `history` and
+/// pending `mempool` entries.
+///
+/// Returns `None` when both are empty (the address has never been used).
+/// Otherwise returns the lowercase hex SHA-256 of the concatenated
+/// `"txid:height:"` strings, as defined by the Electrum protocol.
 fn compute_status_hash(history: &[TxEntry], mempool: &[MempoolEntry]) -> Option<String> {
     if history.is_empty() && mempool.is_empty() {
         return None;
@@ -816,6 +891,8 @@ fn compute_status_hash(history: &[TxEntry], mempool: &[MempoolEntry]) -> Option<
     Some(sha256::Hash::hash(data.as_bytes()).to_string())
 }
 
+/// Return the current tip as `(height, header_hex)`, or `None` when the
+/// source has no header at the indexer's current tip height.
 fn current_header_status<S: BlockSource>(
     indexer: &Indexer,
     source: &S,
@@ -827,6 +904,11 @@ fn current_header_status<S: BlockSource>(
     }
 }
 
+/// Spin-wait until the indexer has processed the block event, up to 2 seconds.
+///
+/// This prevents the notification thread from sending stale status hashes to
+/// clients when a new block arrives: the indexer may be slightly behind the
+/// block-source event stream.
 fn wait_for_indexer_tip(indexer: &Indexer, source_event: &crate::block_source::BlockEvent) {
     use std::time::{Duration, Instant};
 
@@ -848,6 +930,8 @@ fn wait_for_indexer_tip(indexer: &Indexer, source_event: &crate::block_source::B
     }
 }
 
+/// Serialise `value` as a newline-terminated JSON string and write it to the
+/// shared `writer`.
 fn write_json(writer: &Arc<std::sync::Mutex<TcpStream>>, value: &Value) -> Result<()> {
     let mut writer = writer.lock().expect("electrum writer poisoned");
     let response_str = serde_json::to_string(value)? + "\n";
@@ -1921,5 +2005,209 @@ mod tests {
                 .and_then(|status| status.as_deref()),
             pending.as_str()
         );
+    }
+
+    // ---- classify_tx_status -----------------------------------------------
+
+    #[test]
+    fn classify_tx_status_reverted() {
+        assert_eq!(
+            classify_tx_status("transaction has been reverted"),
+            TxStatusKind::Reverted
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_confirmed() {
+        assert_eq!(
+            classify_tx_status(
+                "transaction was included in block 0000000000000000000000000000000000000000000000000000000000000000 at height 1"
+            ),
+            TxStatusKind::Confirmed
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_stale() {
+        assert_eq!(
+            classify_tx_status(
+                "transaction was replaced by 0000000000000000000000000000000000000000000000000000000000000001 in block ..."
+            ),
+            TxStatusKind::Stale
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_acknowledged() {
+        assert_eq!(
+            classify_tx_status("transaction was acknowledged by peer 127.0.0.1:8333"),
+            TxStatusKind::Acknowledged
+        );
+    }
+
+    #[test]
+    fn classify_tx_status_other() {
+        assert_eq!(classify_tx_status("unknown status"), TxStatusKind::Other);
+        assert_eq!(classify_tx_status(""), TxStatusKind::Other);
+    }
+
+    // ---- compute_status_hash ----------------------------------------------
+
+    #[test]
+    fn compute_status_hash_empty_returns_none() {
+        assert!(compute_status_hash(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn compute_status_hash_non_empty_returns_some() {
+        let txid = "0".repeat(64).parse().unwrap();
+        let history = vec![crate::indexer::TxEntry { txid, height: 1, sequence: 0 }];
+        assert!(compute_status_hash(&history, &[]).is_some());
+    }
+
+    // ---- dispatch_request: unknown method ---------------------------------
+
+    #[test]
+    fn dispatch_unknown_method_returns_error_json() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> {
+                Ok((0, bitcoin::BlockHash::all_zeros()))
+            }
+            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> {
+                Ok(None)
+            }
+            fn block_by_hash(&self, _hash: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> {
+                Ok(None)
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let mut state = ClientState::new();
+        let fee_rate = Arc::new(FeeRateState::new());
+        let pending = PendingChangeBroadcaster::default();
+        let raw = r#"{"jsonrpc":"2.0","id":99,"method":"totally.unknown","params":[]}"#;
+        let resp = dispatch_request(raw, &mut state, &indexer, &FakeSource, &Metrics::new(), None, &fee_rate, &pending);
+        assert!(resp.get("error").is_some(), "expected error field in {resp}");
+        assert_eq!(resp["id"], json!(99));
+    }
+
+    // ---- handle_block_headers: missing params -----------------------------
+
+    #[test]
+    fn block_headers_missing_start_height_returns_error() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> { Ok((0, bitcoin::BlockHash::all_zeros())) }
+            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> { Ok(None) }
+            fn block_by_hash(&self, _: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> { Ok(None) }
+        }
+
+        assert!(handle_block_headers(&json!([]), &FakeSource).is_err());
+    }
+
+    #[test]
+    fn block_headers_missing_count_returns_error() {
+        use crate::block_source::{BlockEvent, BlockSource};
+        use crossbeam_channel::Receiver;
+
+        struct FakeSource;
+        impl BlockSource for FakeSource {
+            fn subscribe(&self) -> Receiver<BlockEvent> { crossbeam_channel::never() }
+            fn tip(&self) -> anyhow::Result<(u32, bitcoin::BlockHash)> { Ok((0, bitcoin::BlockHash::all_zeros())) }
+            fn block_header(&self, _h: u32) -> anyhow::Result<Option<bitcoin::blockdata::block::Header>> { Ok(None) }
+            fn block_by_hash(&self, _: &bitcoin::BlockHash) -> anyhow::Result<Option<bitcoin::Block>> { Ok(None) }
+        }
+
+        assert!(handle_block_headers(&json!([0]), &FakeSource).is_err());
+    }
+
+    // ---- handle_transaction_broadcast: error paths ------------------------
+
+    #[test]
+    fn transaction_broadcast_without_broadcaster_returns_error() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![],
+        };
+        let params = json!([hex::encode(bitcoin::consensus::encode::serialize(&tx))]);
+        let pending = PendingChangeBroadcaster::default();
+        let err = handle_transaction_broadcast(&params, &Metrics::new(), None, &indexer, &pending)
+            .expect_err("should fail without broadcaster");
+        assert!(err.contains("bridge mode"), "got: {err}");
+    }
+
+    #[test]
+    fn transaction_broadcast_with_invalid_hex_returns_error() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+
+        struct NopBroadcaster;
+        impl TransactionBroadcaster for NopBroadcaster {
+            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> { Ok(()) }
+        }
+
+        let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(NopBroadcaster);
+        let pending = PendingChangeBroadcaster::default();
+        let err = handle_transaction_broadcast(
+            &json!(["not-hex"]),
+            &Metrics::new(),
+            Some(&broadcaster),
+            &indexer,
+            &pending,
+        )
+        .expect_err("invalid hex should fail");
+        assert!(err.contains("invalid hex"), "got: {err}");
+    }
+
+    #[test]
+    fn transaction_broadcast_with_invalid_tx_bytes_returns_error() {
+        let dir = tempfile::tempdir().expect("temp").keep();
+        let indexer = Indexer::new(dir, Metrics::new()).expect("indexer");
+
+        struct NopBroadcaster;
+        impl TransactionBroadcaster for NopBroadcaster {
+            fn broadcast_transaction(&self, _: Transaction) -> Result<(), String> { Ok(()) }
+        }
+
+        let broadcaster: Arc<dyn TransactionBroadcaster> = Arc::new(NopBroadcaster);
+        let pending = PendingChangeBroadcaster::default();
+        let err = handle_transaction_broadcast(
+            &json!([hex::encode(b"not a valid tx")]),
+            &Metrics::new(),
+            Some(&broadcaster),
+            &indexer,
+            &pending,
+        )
+        .expect_err("invalid tx should fail");
+        assert!(err.contains("invalid transaction"), "got: {err}");
+    }
+
+    // ---- FeeRateState: multiple updates -----------------------------------
+
+    #[test]
+    fn fee_rate_state_last_update_wins() {
+        let fee_rate = FeeRateState::new();
+        fee_rate.update_sat_per_vb(10);
+        fee_rate.update_sat_per_vb(50);
+        assert_eq!(fee_rate.current_sat_per_vb(), Some(50));
     }
 }
