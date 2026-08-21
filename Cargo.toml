@@ -16,11 +16,11 @@ crossbeam-channel = "0.5"
 ctrlc = "3.4"
 electrs = { version = "0.10.10", default-features = false, optional = true }
 hex = "0.4"
-nakamoto-chain = "0.4"
-nakamoto-client = "0.4"
-nakamoto-common = "0.4"
-nakamoto-net-poll = "0.4"
-nakamoto-node = "0.4"
+nakamoto-chain = { git = "https://github.com/bitcoincore-dev/nakamoto", rev = "5ffebc60bf35585c096943ea9d4c4cfc9e454a20" }
+nakamoto-client = { git = "https://github.com/bitcoincore-dev/nakamoto", rev = "5ffebc60bf35585c096943ea9d4c4cfc9e454a20" }
+nakamoto-common = { git = "https://github.com/bitcoincore-dev/nakamoto", rev = "5ffebc60bf35585c096943ea9d4c4cfc9e454a20" }
+nakamoto-net-poll = { git = "https://github.com/bitcoincore-dev/nakamoto", rev = "5ffebc60bf35585c096943ea9d4c4cfc9e454a20" }
+nakamoto-node = { git = "https://github.com/bitcoincore-dev/nakamoto", rev = "5ffebc60bf35585c096943ea9d4c4cfc9e454a20" }
 serde_json = "1.0"
 sled = "0.34"
 tempfile = "3.23"
@@ -29,7 +29,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [dev-dependencies]
-nakamoto-p2p = "0.4"
+nakamoto-p2p = { git = "https://github.com/bitcoincore-dev/nakamoto", rev = "5ffebc60bf35585c096943ea9d4c4cfc9e454a20" }
 
 [[example]]
 name = "electrs"
