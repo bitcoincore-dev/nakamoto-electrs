@@ -44,7 +44,7 @@ jobs:
         uses: taiki-e/install-action@cargo-binstall
 
       - name: Install cargo-audit
-        run: cargo binstall --locked --no-confirm cargo-audit
+        run: cargo binstall --locked --no-confirm --force cargo-audit
 
       - name: Run cargo audit
         run: cargo audit
