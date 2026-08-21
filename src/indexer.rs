@@ -622,6 +622,19 @@ impl IndexState {
             })
             .collect()
     }
+
+    fn pending_spent_outpoints(&self) -> std::collections::HashSet<OutPoint> {
+        let mut spent = std::collections::HashSet::new();
+        for tx in self.pending_txs.values() {
+            for input in &tx.input {
+                let prevout = input.previous_output;
+                if !prevout.is_null() {
+                    spent.insert(prevout);
+                }
+            }
+        }
+        spent
+    }
 }
 
 fn action_sequence(action: &BlockAction) -> u32 {
@@ -814,7 +827,12 @@ impl Indexer {
 
     pub fn list_unspent(&self, sh: &ScriptHash) -> Result<Vec<StoredUnspent>> {
         let state = self.state.read().expect("index read lock poisoned");
-        let mut out = state.list_unspent(sh)?;
+        let spent = state.pending_spent_outpoints();
+        let mut out = state
+            .list_unspent(sh)?
+            .into_iter()
+            .filter(|entry| !spent.contains(&OutPoint::new(entry.txid, entry.vout)))
+            .collect::<Vec<_>>();
         out.extend(state.pending_unspent_for_script(sh));
         out.sort_by_key(|e| (e.height, e.txid.to_string(), e.vout));
         out.dedup_by_key(|e| (e.txid, e.vout));
@@ -1016,6 +1034,34 @@ mod tests {
         assert_eq!(unspent.len(), 1);
         assert_eq!(unspent[0].value, 1000);
         assert_eq!(unspent[0].height, 1);
+    }
+
+    #[test]
+    fn list_unspent_hides_confirmed_outputs_spent_in_pending_tx() {
+        let mut state = make_state();
+        let script = p2pkh_script();
+        let block = make_block(1, vec![script.clone()]);
+        let fund_txid = block.txdata[0].compute_txid();
+        let prevout = bitcoin::OutPoint::new(fund_txid, 0);
+        state.apply_block(&block, 1).expect("apply");
+
+        let spend = make_spend_block(2, prevout, vec![0x6au8])
+            .txdata
+            .into_iter()
+            .next()
+            .expect("spend tx");
+        state
+            .track_pending_transaction_internal(&spend)
+            .expect("track pending");
+
+        let sh = ScriptHash::from_script(&Builder::from(script).into_script());
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        {
+            let mut live = indexer.state.write().expect("index write lock poisoned");
+            *live = state;
+        }
+        assert!(indexer.list_unspent(&sh).expect("list").is_empty());
     }
 
     #[test]
