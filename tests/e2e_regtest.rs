@@ -481,6 +481,18 @@ fn e2e_get_mempool_returns_empty_for_unseen_script() {
 #[test]
 #[ignore = "requires external bitcoind -regtest; run with --ignored"]
 fn e2e_fee_histogram_returns_array() {
+    let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
+    let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
+    let status = std::process::Command::new("bitcoin-cli")
+        .args(bitcoin_cli_base_args(datadir.as_deref(), &rpc_user, &rpc_pass, "18443"))
+        .arg("getblockchaininfo")
+        .status();
+    if status.map(|s| !s.success()).unwrap_or(true) {
+        eprintln!("bitcoin-cli not available or bitcoind not running — skipping test");
+        return;
+    }
+
     let addr = start_electrum_server();
     let resp = electrum_call(
         addr,
@@ -497,6 +509,18 @@ fn e2e_fee_histogram_returns_array() {
 #[test]
 #[ignore = "requires external bitcoind -regtest; run with --ignored"]
 fn e2e_relayfee_returns_positive_value() {
+    let rpc_user = std::env::var("BITCOIND_RPC_USER").unwrap_or_else(|_| "user".into());
+    let rpc_pass = std::env::var("BITCOIND_RPC_PASS").unwrap_or_else(|_| "passw0rd".into());
+    let datadir = std::env::var("BITCOIND_STABLE_DATADIR").ok();
+    let status = std::process::Command::new("bitcoin-cli")
+        .args(bitcoin_cli_base_args(datadir.as_deref(), &rpc_user, &rpc_pass, "18443"))
+        .arg("getblockchaininfo")
+        .status();
+    if status.map(|s| !s.success()).unwrap_or(true) {
+        eprintln!("bitcoin-cli not available or bitcoind not running — skipping test");
+        return;
+    }
+
     let addr = start_electrum_server();
     let resp = electrum_call(
         addr,
