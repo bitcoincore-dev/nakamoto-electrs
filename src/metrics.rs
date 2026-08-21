@@ -30,6 +30,8 @@ struct Inner {
     /// Total number of transactions broadcast via the Electrum
     /// `blockchain.transaction.broadcast` method.
     transactions_broadcast: AtomicU64,
+    /// Total unique txids observed as acknowledged by peers.
+    peer_seen_transactions: AtomicU64,
 }
 
 impl Metrics {
@@ -102,6 +104,18 @@ impl Metrics {
     pub fn transactions_broadcast(&self) -> u64 {
         self.0.transactions_broadcast.load(Ordering::Relaxed)
     }
+
+    /// Record a peer-seen transaction.
+    pub fn inc_peer_seen_transactions(&self) {
+        self.0
+            .peer_seen_transactions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Total peer-seen transactions.
+    pub fn peer_seen_transactions(&self) -> u64 {
+        self.0.peer_seen_transactions.load(Ordering::Relaxed)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +134,7 @@ mod tests {
         assert_eq!(m.electrum_connections(), 0);
         assert_eq!(m.electrum_requests(), 0);
         assert_eq!(m.transactions_broadcast(), 0);
+        assert_eq!(m.peer_seen_transactions(), 0);
     }
 
     #[test]
@@ -161,6 +176,8 @@ mod tests {
         let m1 = Metrics::new();
         let m2 = m1.clone();
         m1.inc_blocks_indexed();
+        m1.inc_peer_seen_transactions();
         assert_eq!(m2.blocks_indexed(), 1);
+        assert_eq!(m2.peer_seen_transactions(), 1);
     }
 }

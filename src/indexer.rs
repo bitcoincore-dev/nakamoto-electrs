@@ -93,6 +93,7 @@ struct IndexState {
     peer_seen_txs: std::collections::HashSet<Txid>,
     tip_height: u32,
     store: PersistentIndex,
+    metrics: Metrics,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +117,7 @@ enum BlockAction {
 }
 
 impl IndexState {
-    fn new(index_dir: PathBuf) -> Result<Self> {
+    fn new(index_dir: PathBuf, metrics: Metrics) -> Result<Self> {
         let store = PersistentIndex::open(index_dir)?;
         let tip_height = store.tip_height();
         let mut state = Self {
@@ -127,6 +128,7 @@ impl IndexState {
             peer_seen_txs: std::collections::HashSet::new(),
             tip_height,
             store,
+            metrics,
         };
         state.load_history_from_store()?;
         let confirmed_txids = state.load_journal_from_store()?;
@@ -739,7 +741,9 @@ impl IndexState {
     }
 
     fn record_peer_acknowledgement(&mut self, txid: &Txid) -> Result<()> {
-        self.peer_seen_txs.insert(*txid);
+        if self.peer_seen_txs.insert(*txid) {
+            self.metrics.inc_peer_seen_transactions();
+        }
         self.store.store_peer_seen_txid(*txid)
     }
 
@@ -838,7 +842,7 @@ impl Indexer {
     /// Create a new indexer rooted at `index_dir`.
     pub fn new(index_dir: PathBuf, metrics: Metrics) -> Result<Self> {
         Ok(Self {
-            state: Arc::new(RwLock::new(IndexState::new(index_dir)?)),
+            state: Arc::new(RwLock::new(IndexState::new(index_dir, metrics.clone())?)),
             metrics,
         })
     }
@@ -1037,7 +1041,7 @@ mod tests {
 
     fn make_state() -> IndexState {
         let dir = tempfile::tempdir().expect("temp dir").keep();
-        IndexState::new(dir).expect("state")
+        IndexState::new(dir, Metrics::new()).expect("state")
     }
 
     fn make_block(height: u32, scripts: Vec<Vec<u8>>) -> Block {
@@ -1417,7 +1421,7 @@ mod tests {
     #[test]
     fn restart_preserves_rollback_state() {
         let dir = tempfile::tempdir().expect("temp dir").keep();
-        let mut state = IndexState::new(dir.clone()).expect("state");
+        let mut state = IndexState::new(dir.clone(), Metrics::new()).expect("state");
 
         let script = p2pkh_script();
         let fund_block = make_block(1, vec![script.clone()]);
@@ -1433,7 +1437,7 @@ mod tests {
         assert_eq!(state.get_balance(&sh).unwrap(), 0);
         drop(state);
 
-        let mut reopened = IndexState::new(dir).expect("reopen");
+        let mut reopened = IndexState::new(dir, Metrics::new()).expect("reopen");
         assert_eq!(reopened.get_balance(&sh).unwrap(), 0);
         reopened.rollback_height(2).expect("rollback after restart");
         assert_eq!(reopened.get_balance(&sh).unwrap(), 1000);
@@ -1444,7 +1448,7 @@ mod tests {
     fn restart_restores_pending_transactions() {
         let dir = tempfile::tempdir().expect("temp dir").keep();
         let reopen_dir = dir.clone();
-        let mut state = IndexState::new(dir.clone()).expect("state");
+        let mut state = IndexState::new(dir.clone(), Metrics::new()).expect("state");
 
         let script = p2pkh_script();
         let tx = Transaction {
@@ -1472,7 +1476,7 @@ mod tests {
         );
         drop(state);
 
-        let reopened = IndexState::new(dir).expect("reopen");
+        let reopened = IndexState::new(dir, Metrics::new()).expect("reopen");
         assert_eq!(
             reopened
                 .store
@@ -1504,11 +1508,17 @@ mod tests {
         let txid = bitcoin::Txid::all_zeros();
 
         {
-            let indexer = Indexer::new(dir.clone(), Metrics::new()).expect("indexer");
+            let metrics = Metrics::new();
+            let indexer = Indexer::new(dir.clone(), metrics.clone()).expect("indexer");
             indexer
                 .record_peer_acknowledgement(&txid)
                 .expect("record ack");
             assert!(indexer.has_peer_seen_txid(&txid));
+            assert_eq!(metrics.peer_seen_transactions(), 1);
+            indexer
+                .record_peer_acknowledgement(&txid)
+                .expect("record ack twice");
+            assert_eq!(metrics.peer_seen_transactions(), 1);
         }
 
         let reopened = Indexer::new(dir, Metrics::new()).expect("reopen");
