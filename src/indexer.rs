@@ -231,13 +231,20 @@ impl IndexState {
         }
     }
 
-    fn track_pending_transaction_internal(&mut self, tx: &Transaction) -> Result<()> {
+    fn track_pending_transaction_internal(&mut self, tx: &Transaction) -> Result<Vec<ScriptHash>> {
+        use std::collections::HashSet;
+
         let txid = tx.compute_txid();
+        let mut affected = HashSet::new();
+        for conflict in self.pending_conflicting_txids(tx) {
+            affected.extend(self.forget_pending_transaction_chain_internal(&conflict));
+        }
         self.store.store_tx(tx)?;
         self.store.store_pending_txid(txid)?;
         self.pending_txs.insert(txid, tx.clone());
         self.rebuild_pending_view();
-        Ok(())
+        affected.extend(self.pending_affected_scripts_for_tx(tx));
+        Ok(affected.into_iter().collect())
     }
 
     fn forget_pending_transaction_internal(&mut self, txid: &Txid) {
@@ -293,8 +300,7 @@ impl IndexState {
         let Some(tx) = self.store.load_tx(txid)? else {
             return Ok(None);
         };
-        self.track_pending_transaction_internal(&tx)?;
-        Ok(Some(self.pending_affected_scripts_for_tx(&tx)))
+        Ok(Some(self.track_pending_transaction_internal(&tx)?))
     }
 
     fn pending_history_for_script(&self, sh: &ScriptHash) -> Vec<TxEntry> {
@@ -400,6 +406,31 @@ impl IndexState {
         }
 
         touched.into_iter().collect()
+    }
+
+    fn pending_conflicting_txids(&self, tx: &Transaction) -> Vec<Txid> {
+        use std::collections::HashSet;
+
+        let new_prevouts: HashSet<OutPoint> = tx
+            .input
+            .iter()
+            .map(|input| input.previous_output)
+            .filter(|prevout| !prevout.is_null())
+            .collect();
+        let new_prevout_txids: HashSet<Txid> =
+            new_prevouts.iter().map(|prevout| prevout.txid).collect();
+
+        self.pending_txs
+            .iter()
+            .filter(|(candidate_txid, _)| !new_prevout_txids.contains(*candidate_txid))
+            .filter(|(_, candidate)| {
+                candidate
+                    .input
+                    .iter()
+                    .any(|input| new_prevouts.contains(&input.previous_output))
+            })
+            .map(|(candidate_txid, _)| *candidate_txid)
+            .collect()
     }
 
     fn pending_tx_touches_script(&self, tx: &Transaction, sh: &ScriptHash) -> bool {
@@ -884,12 +915,7 @@ impl Indexer {
         self.state
             .write()
             .expect("index write lock poisoned")
-            .track_pending_transaction_internal(tx)?;
-        Ok(self
-            .state
-            .read()
-            .expect("index read lock poisoned")
-            .pending_affected_scripts_for_tx(tx))
+            .track_pending_transaction_internal(tx)
     }
 
     pub fn restore_pending_transaction(&self, txid: &Txid) -> Result<Option<Vec<ScriptHash>>> {
