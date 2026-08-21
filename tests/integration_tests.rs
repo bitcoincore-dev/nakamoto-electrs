@@ -18,8 +18,27 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+fn read_line_until_nonempty(
+    reader: &mut BufReader<TcpStream>,
+    line: &mut String,
+    deadline: Instant,
+    context: &str,
+) {
+    while line.is_empty() {
+        assert!(Instant::now() < deadline, "timed out waiting for {context}");
+        match reader.read_line(line) {
+            Ok(0) => thread::sleep(Duration::from_millis(50)),
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read {context}: {err}"),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Network round-trip
@@ -915,16 +934,12 @@ fn electrum_scripthash_subscribe_updates_on_mempool_chain_changes() {
     .unwrap();
     tx_stream1.write_all(b"\n").unwrap();
     line.clear();
-    while line.is_empty() {
-        match sub_reader.read_line(&mut line) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("failed to read first mempool notification: {err}"),
-        }
-    }
+    read_line_until_nonempty(
+        &mut sub_reader,
+        &mut line,
+        Instant::now() + Duration::from_secs(5),
+        "first mempool notification",
+    );
     let first_note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(first_note["method"], "blockchain.scripthash.subscribe");
     assert_eq!(first_note["params"][0], serde_json::json!(sh_a.to_hex()));
@@ -934,16 +949,12 @@ fn electrum_scripthash_subscribe_updates_on_mempool_chain_changes() {
         .to_owned();
 
     line.clear();
-    while line.is_empty() {
-        match tx_reader1.read_line(&mut line) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("failed to read first broadcast response: {err}"),
-        }
-    }
+    read_line_until_nonempty(
+        &mut tx_reader1,
+        &mut line,
+        Instant::now() + Duration::from_secs(5),
+        "first broadcast response",
+    );
     let first_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(
         first_resp["result"],
@@ -969,16 +980,12 @@ fn electrum_scripthash_subscribe_updates_on_mempool_chain_changes() {
     tx_stream2.write_all(b"\n").unwrap();
 
     line.clear();
-    while line.is_empty() {
-        match sub_reader.read_line(&mut line) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("failed to read second mempool notification: {err}"),
-        }
-    }
+    read_line_until_nonempty(
+        &mut sub_reader,
+        &mut line,
+        Instant::now() + Duration::from_secs(5),
+        "second mempool notification",
+    );
     let second_note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(second_note["method"], "blockchain.scripthash.subscribe");
     assert_eq!(second_note["params"][0], serde_json::json!(sh_a.to_hex()));
@@ -986,16 +993,12 @@ fn electrum_scripthash_subscribe_updates_on_mempool_chain_changes() {
     assert_ne!(first_status, second_status);
 
     line.clear();
-    while line.is_empty() {
-        match tx_reader2.read_line(&mut line) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("failed to read second broadcast response: {err}"),
-        }
-    }
+    read_line_until_nonempty(
+        &mut tx_reader2,
+        &mut line,
+        Instant::now() + Duration::from_secs(5),
+        "second broadcast response",
+    );
     let second_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(
         second_resp["result"],
