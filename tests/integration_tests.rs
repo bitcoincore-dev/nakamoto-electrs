@@ -1907,6 +1907,228 @@ fn electrum_scripthash_get_mempool_updates_when_parent_is_replaced() {
 }
 
 #[test]
+fn electrum_scripthash_get_mempool_updates_on_deep_chain_replacement() {
+    #[derive(Clone, Default)]
+    struct MockBroadcaster;
+
+    impl TransactionBroadcaster for MockBroadcaster {
+        fn broadcast_transaction(&self, _tx: bitcoin::Transaction) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        Some(Arc::new(MockBroadcaster)),
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let parent_script = mock::op_return_script(0x81);
+    let child_script = mock::op_return_script(0x82);
+    let grandchild_script = mock::op_return_script(0x83);
+    let replacement_script = mock::op_return_script(0x84);
+    let parent = mock::make_tx(vec![parent_script.clone()]);
+    let parent_txid = parent.compute_txid();
+    let child = mock::make_spend_tx(
+        bitcoin::OutPoint::new(parent_txid, 0),
+        vec![(900, child_script.clone())],
+    );
+    let child_txid = child.compute_txid();
+    let grandchild = mock::make_spend_tx(
+        bitcoin::OutPoint::new(child_txid, 0),
+        vec![(800, grandchild_script.clone())],
+    );
+    let replacement = mock::make_spend_tx(
+        bitcoin::OutPoint::new(parent_txid, 0),
+        vec![(900, replacement_script.clone())],
+    );
+
+    for (id, tx) in [
+        (1u64, parent.clone()),
+        (2u64, child.clone()),
+        (3u64, grandchild.clone()),
+    ] {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":{},"method":"blockchain.transaction.broadcast","params":["{}"]}}"#,
+            id,
+            hex::encode(bitcoin::consensus::encode::serialize(&tx))
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+
+        let mut line = String::new();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read broadcast response: {err}"),
+            }
+        }
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(resp["result"], serde_json::json!(tx.compute_txid().to_string()));
+    }
+
+    let mut sub_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    sub_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut sub_reader = BufReader::new(sub_stream.try_clone().unwrap());
+    write!(
+        sub_stream,
+        r#"{{"jsonrpc":"2.0","id":4,"method":"blockchain.scripthash.subscribe","params":["{}"]}}"#,
+        sh_of(&grandchild_script).to_hex()
+    )
+    .unwrap();
+    sub_stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    while line.is_empty() {
+        match sub_reader.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read grandchild subscribe response: {err}"),
+        }
+    }
+    let initial: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(initial["result"].is_string());
+
+    let mempool_before: serde_json::Value = {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":5,"method":"blockchain.scripthash.get_mempool","params":["{}"]}}"#,
+            sh_of(&grandchild_script).to_hex()
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+        line.clear();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read grandchild mempool response: {err}"),
+            }
+        }
+        serde_json::from_str(line.trim()).unwrap()
+    };
+    assert_eq!(mempool_before["result"].as_array().unwrap().len(), 1);
+
+    let mut repl_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    repl_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut repl_reader = BufReader::new(repl_stream.try_clone().unwrap());
+    write!(
+        repl_stream,
+        r#"{{"jsonrpc":"2.0","id":6,"method":"blockchain.transaction.broadcast","params":["{}"]}}"#,
+        hex::encode(bitcoin::consensus::encode::serialize(&replacement))
+    )
+    .unwrap();
+    repl_stream.write_all(b"\n").unwrap();
+
+    line.clear();
+    while line.is_empty() {
+        match sub_reader.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read grandchild replacement notification: {err}"),
+        }
+    }
+    let note: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(note["method"], "blockchain.scripthash.subscribe");
+    assert_eq!(
+        note["params"][0],
+        serde_json::json!(sh_of(&grandchild_script).to_hex())
+    );
+    assert!(note["params"][1].is_null());
+
+    let mempool_after: serde_json::Value = {
+        let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":7,"method":"blockchain.scripthash.get_mempool","params":["{}"]}}"#,
+            sh_of(&grandchild_script).to_hex()
+        )
+        .unwrap();
+        stream.write_all(b"\n").unwrap();
+        line.clear();
+        while line.is_empty() {
+            match reader.read_line(&mut line) {
+                Ok(0) => continue,
+                Ok(_) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to read grandchild post-replacement mempool: {err}"),
+            }
+        }
+        serde_json::from_str(line.trim()).unwrap()
+    };
+    assert!(mempool_after["result"].as_array().unwrap().is_empty());
+
+    line.clear();
+    while line.is_empty() {
+        match repl_reader.read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to read replacement broadcast response: {err}"),
+        }
+    }
+    let repl_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(
+        repl_resp["result"],
+        serde_json::json!(replacement.compute_txid().to_string())
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+#[test]
 fn electrum_disconnect_reverts_headers_and_scripthash_state() {
     let source = Arc::new(mock::MockBlockSource::new());
     let metrics = Metrics::new();
