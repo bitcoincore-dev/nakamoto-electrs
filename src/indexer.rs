@@ -310,21 +310,54 @@ impl IndexState {
     }
 
     fn pending_affected_scripts_for_tx(&self, tx: &Transaction) -> Vec<ScriptHash> {
-        use std::collections::HashSet;
+        use std::collections::{HashSet, VecDeque};
 
         let mut touched = HashSet::new();
-        for input in &tx.input {
-            let prevout = input.previous_output;
-            if prevout.is_null() {
+        let mut seen_txs = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(tx.compute_txid());
+
+        while let Some(txid) = queue.pop_front() {
+            if !seen_txs.insert(txid) {
                 continue;
             }
-            if let Some(script_hash) = self.script_hash_for_outpoint(&prevout).ok().flatten() {
-                touched.insert(script_hash);
+
+            let current = if txid == tx.compute_txid() {
+                tx
+            } else if let Some(current) = self.pending_txs.get(&txid) {
+                current
+            } else {
+                continue;
+            };
+
+            for input in &current.input {
+                let prevout = input.previous_output;
+                if prevout.is_null() {
+                    continue;
+                }
+                if let Some(script_hash) = self.script_hash_for_outpoint(&prevout).ok().flatten() {
+                    touched.insert(script_hash);
+                }
+            }
+            for output in &current.output {
+                touched.insert(ScriptHash::from_script(&output.script_pubkey));
+            }
+
+            for candidate in self.pending_txs.values() {
+                let candidate_txid = candidate.compute_txid();
+                if seen_txs.contains(&candidate_txid) {
+                    continue;
+                }
+                if candidate
+                    .input
+                    .iter()
+                    .any(|input| !input.previous_output.is_null() && input.previous_output.txid == txid)
+                {
+                    queue.push_back(candidate_txid);
+                }
             }
         }
-        for output in &tx.output {
-            touched.insert(ScriptHash::from_script(&output.script_pubkey));
-        }
+
         touched.into_iter().collect()
     }
 
