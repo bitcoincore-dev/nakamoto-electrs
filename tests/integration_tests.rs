@@ -2705,3 +2705,619 @@ fn indexer_persists_history_balance_and_utxos_across_restart() {
     assert_eq!(reopened.get_history(&sh_a).len(), 2);
     assert_eq!(reopened.get_history(&sh_b).len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Additional get_mempool negative tests
+// ---------------------------------------------------------------------------
+
+/// `blockchain.scripthash.get_mempool` with an empty params array should
+/// return an error rather than panicking.
+#[test]
+fn electrum_scripthash_get_mempool_rejects_missing_params() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer,
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.get_mempool","params":[]}}"#
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(resp["result"].is_null(), "expected null result: {resp}");
+    assert!(
+        !resp["error"]["message"].as_str().unwrap_or("").is_empty(),
+        "expected error message: {resp}"
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+/// `blockchain.scripthash.get_mempool` with a non-string param (integer)
+/// should return an error.
+#[test]
+fn electrum_scripthash_get_mempool_rejects_non_string_param() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer,
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    // Pass an integer instead of a hex string.
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.get_mempool","params":[42]}}"#
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(resp["result"].is_null(), "expected null result: {resp}");
+    assert!(
+        !resp["error"]["message"].as_str().unwrap_or("").is_empty(),
+        "expected error message: {resp}"
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+/// `blockchain.scripthash.get_mempool` with a 64-character string that
+/// contains non-hex characters should return a parse error.
+#[test]
+fn electrum_scripthash_get_mempool_rejects_non_hex_chars_in_hash() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer,
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    // 64 characters long but contains 'g' which is not valid hex.
+    let bad_hash = "g".repeat(64);
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.get_mempool","params":["{bad_hash}"]}}"#
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(resp["result"].is_null(), "expected null result: {resp}");
+    let msg = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("invalid hex"),
+        "expected 'invalid hex' in error message, got: {msg}"
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// Persistence/restart integration test
+// ---------------------------------------------------------------------------
+
+/// Pending mempool transactions should survive an indexer restart.
+///
+/// Steps:
+/// 1. Track a transaction directly via `indexer.track_pending_transaction()`
+///    (which persists it to disk) without spinning up a server.
+/// 2. Drop the `Indexer` so the sled database is fully released.
+/// 3. Create a new `Indexer` from the **same on-disk directory** and attach a
+///    new `ElectrumServer`.
+/// 4. Call `blockchain.scripthash.get_mempool` on the new server and confirm
+///    the transaction is still returned.
+#[test]
+fn electrum_pending_mempool_survives_restart() {
+    let dir = tempdir().expect("temp dir").keep();
+
+    let script = p2pkh_script();
+    let sh = sh_of(&script);
+    let tx = mock::make_tx(vec![script.clone()]);
+    let txid = tx.compute_txid();
+
+    // ── Phase 1: persist the pending tx directly, then drop the indexer ─────
+    {
+        let metrics = Metrics::new();
+        let indexer =
+            nakamoto_electrs::indexer::Indexer::new(dir.clone(), metrics).expect("indexer");
+        indexer
+            .track_pending_transaction(&tx)
+            .expect("track pending tx");
+        // `indexer` and all its clones are dropped here, releasing the db lock.
+    }
+
+    // ── Phase 2: restart – open new indexer from same dir, serve via RPC ────
+    let source2 = Arc::new(mock::MockBlockSource::new());
+    let metrics2 = Metrics::new();
+    let indexer2 =
+        nakamoto_electrs::indexer::Indexer::new(dir.clone(), metrics2.clone())
+            .expect("reopened indexer");
+    let _indexer_handle2 = indexer2.clone().start(&source2);
+    let fee_rate2 = Arc::new(FeeRateState::new());
+    let pending_changes2 = PendingChangeBroadcaster::default();
+    let addr2: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server2 = ElectrumServer::bind(
+        addr2,
+        indexer2,
+        metrics2,
+        None,
+        fee_rate2,
+        pending_changes2,
+    )
+    .expect("bind2");
+    let local_addr2 = server2.local_addr();
+    let shutdown2 = Arc::new(AtomicBool::new(false));
+    let shutdown_thread2 = Arc::clone(&shutdown2);
+    let server_source2 = Arc::clone(&source2);
+    thread::spawn(move || {
+        let _ = server2.run(server_source2, shutdown_thread2);
+    });
+
+    // Query mempool on the restarted server.
+    let mut stream2 =
+        TcpStream::connect_timeout(&local_addr2, Duration::from_secs(5)).unwrap();
+    stream2
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut reader2 = BufReader::new(stream2.try_clone().unwrap());
+    write!(
+        stream2,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"blockchain.scripthash.get_mempool","params":["{}"]}}"#,
+        sh.to_hex()
+    )
+    .unwrap();
+    stream2.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    reader2.read_line(&mut line).unwrap();
+    let mempool: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(
+        mempool["error"].is_null(),
+        "unexpected error after restart: {mempool}"
+    );
+    let entries = mempool["result"].as_array().unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected 1 pending entry after restart, got: {mempool}"
+    );
+    assert_eq!(
+        entries[0]["tx_hash"],
+        serde_json::json!(txid.to_string()),
+        "wrong txid after restart: {mempool}"
+    );
+
+    shutdown2.store(true, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// Reverted-tx recovery test
+// ---------------------------------------------------------------------------
+
+/// When `apply_tx_status_change` receives a revert status for a previously
+/// confirmed transaction, the transaction should reappear in `get_mempool` as
+/// a pending entry.
+#[test]
+fn electrum_get_mempool_shows_tx_after_revert() {
+    use nakamoto_electrs::electrum_server::apply_tx_status_change;
+
+    #[derive(Clone, Default)]
+    struct MockBroadcaster;
+    impl TransactionBroadcaster for MockBroadcaster {
+        fn broadcast_transaction(&self, _tx: bitcoin::Transaction) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        Some(Arc::new(MockBroadcaster)),
+        fee_rate,
+        pending_changes.clone(),
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let script = p2pkh_script();
+    let sh = sh_of(&script);
+    let tx = mock::make_tx(vec![script.clone()]);
+    let txid = tx.compute_txid();
+    let tx_raw = hex::encode(bitcoin::consensus::encode::serialize(&tx));
+
+    // Broadcast so the tx enters pending_txs.
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.transaction.broadcast","params":["{tx_raw}"]}}"#
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let broadcast: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(broadcast["result"], serde_json::json!(txid.to_string()));
+
+    // Simulate confirmation using the Nakamoto-style status string.
+    apply_tx_status_change(
+        &indexer,
+        &pending_changes,
+        &txid.to_string(),
+        "transaction was included in block 1",
+    )
+    .expect("apply confirmed");
+
+    // Verify the mempool is now empty.
+    let query_mempool = |id: u64| -> serde_json::Value {
+        let mut s = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        write!(
+            s,
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"blockchain.scripthash.get_mempool","params":["{}"]}}"#,
+            sh.to_hex()
+        )
+        .unwrap();
+        s.write_all(b"\n").unwrap();
+        let mut l = String::new();
+        r.read_line(&mut l).unwrap();
+        serde_json::from_str(l.trim()).unwrap()
+    };
+
+    let after_confirm = query_mempool(2);
+    assert!(
+        after_confirm["result"].as_array().unwrap().is_empty(),
+        "expected empty mempool after confirmation: {after_confirm}"
+    );
+
+    // Simulate revert using the Nakamoto-style status string.
+    apply_tx_status_change(
+        &indexer,
+        &pending_changes,
+        &txid.to_string(),
+        "transaction has been reverted",
+    )
+    .expect("apply reverted");
+
+    let after_revert = query_mempool(3);
+    let entries = after_revert["result"].as_array().unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected 1 pending entry after revert: {after_revert}"
+    );
+    assert_eq!(
+        entries[0]["tx_hash"],
+        serde_json::json!(txid.to_string()),
+        "wrong txid after revert: {after_revert}"
+    );
+    assert_eq!(
+        entries[0]["height"],
+        serde_json::json!(0),
+        "reverted tx should have height 0 (all inputs confirmed): {after_revert}"
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// blockchain.relayfee tests
+// ---------------------------------------------------------------------------
+
+/// `blockchain.relayfee` should return a positive floating-point BTC/kB value.
+#[test]
+fn electrum_relayfee_returns_minimum_fee() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer,
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.relayfee","params":[]}}"#
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(resp["error"].is_null(), "unexpected error: {resp}");
+    let fee = resp["result"].as_f64().expect("result must be a number");
+    assert!(fee > 0.0, "relay fee must be positive, got {fee}");
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// mempool.get_fee_histogram tests
+// ---------------------------------------------------------------------------
+
+/// `mempool.get_fee_histogram` should return an array even when the mempool
+/// is empty.
+#[test]
+fn electrum_fee_histogram_returns_empty_array_when_mempool_is_empty() {
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer,
+        metrics,
+        None,
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"mempool.get_fee_histogram","params":[]}}"#
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(resp["error"].is_null(), "unexpected error: {resp}");
+    assert!(
+        resp["result"].is_array(),
+        "result must be an array: {resp}"
+    );
+
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+/// When pending transactions with known prevout values are tracked,
+/// `mempool.get_fee_histogram` should include them sorted by decreasing fee
+/// rate and each entry must be a `[fee_rate, vsize]` pair.
+#[test]
+fn electrum_fee_histogram_includes_tracked_transactions() {
+    #[derive(Clone, Default)]
+    struct MockBroadcaster;
+    impl TransactionBroadcaster for MockBroadcaster {
+        fn broadcast_transaction(&self, _tx: bitcoin::Transaction) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let source = Arc::new(mock::MockBlockSource::new());
+    let metrics = Metrics::new();
+    let indexer = make_indexer(metrics.clone());
+    let _indexer_handle = indexer.clone().start(&source);
+    let fee_rate = Arc::new(FeeRateState::new());
+    let pending_changes = PendingChangeBroadcaster::default();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server = ElectrumServer::bind(
+        addr,
+        indexer.clone(),
+        metrics,
+        Some(Arc::new(MockBroadcaster)),
+        fee_rate,
+        pending_changes,
+    )
+    .expect("bind");
+    let local_addr = server.local_addr();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let server_source = Arc::clone(&source);
+    thread::spawn(move || {
+        let _ = server.run(server_source, shutdown_thread);
+    });
+
+    // Mine a block containing a coinbase output that we can spend.
+    let coinbase_script = p2pkh_script();
+    let coinbase_block =
+        mock::make_block(bitcoin::BlockHash::all_zeros(), 1, vec![coinbase_script.clone()]);
+    let coinbase_txid = coinbase_block.txdata[0].compute_txid();
+    source.push(BlockEvent::Connected {
+        block: coinbase_block,
+        height: 1,
+    });
+    // Wait for the indexer to process the block.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let sh_coinbase = sh_of(&coinbase_script);
+    while indexer.get_history(&sh_coinbase).is_empty() {
+        assert!(std::time::Instant::now() < deadline, "timed out");
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // Build a spending transaction: prevout value is 1000 sat, output is 900
+    // sat → fee = 100 sat.
+    let spend_script = mock::op_return_script(0xAA);
+    let spend_tx = mock::make_spend_tx(
+        bitcoin::OutPoint::new(coinbase_txid, 0),
+        vec![(900, spend_script.clone())],
+    );
+    let spend_raw = hex::encode(bitcoin::consensus::encode::serialize(&spend_tx));
+
+    // Broadcast the spending transaction.
+    let mut stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    write!(
+        stream,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"blockchain.transaction.broadcast","params":["{spend_raw}"]}}"#
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let broadcast: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(
+        broadcast["error"].is_null(),
+        "broadcast failed: {broadcast}"
+    );
+
+    // Query the fee histogram.
+    let mut hstream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    hstream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut hreader = BufReader::new(hstream.try_clone().unwrap());
+    write!(
+        hstream,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"mempool.get_fee_histogram","params":[]}}"#
+    )
+    .unwrap();
+    hstream.write_all(b"\n").unwrap();
+    line.clear();
+    hreader.read_line(&mut line).unwrap();
+    let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert!(resp["error"].is_null(), "unexpected error: {resp}");
+    let histogram = resp["result"].as_array().unwrap();
+
+    // There is one transaction with known prevout, so the histogram must be
+    // non-empty.
+    assert!(
+        !histogram.is_empty(),
+        "histogram should be non-empty after broadcast: {resp}"
+    );
+
+    // Each entry must be a [fee_rate, vsize] pair.
+    for entry in histogram {
+        let arr = entry.as_array().expect("each histogram entry must be an array");
+        assert_eq!(arr.len(), 2, "histogram entry must have 2 elements: {entry}");
+        assert!(arr[0].as_u64().is_some(), "fee_rate must be u64: {entry}");
+        assert!(arr[1].as_u64().is_some(), "vsize must be u64: {entry}");
+        assert!(arr[0].as_u64().unwrap() > 0, "fee_rate must be > 0: {entry}");
+        assert!(arr[1].as_u64().unwrap() > 0, "vsize must be > 0: {entry}");
+    }
+
+    // Verify the histogram is sorted by decreasing fee rate.
+    let rates: Vec<u64> = histogram
+        .iter()
+        .map(|e| e[0].as_u64().unwrap())
+        .collect();
+    let mut sorted = rates.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(rates, sorted, "histogram must be sorted by decreasing fee rate");
+
+    shutdown.store(true, Ordering::SeqCst);
+}

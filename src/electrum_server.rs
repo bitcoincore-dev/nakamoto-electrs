@@ -22,6 +22,8 @@
 //! | `blockchain.estimatefee` | Estimate fee rate |
 //! | `blockchain.block.header` | Fetch a block header by height |
 //! | `blockchain.block.headers` | Fetch a range of block headers |
+//! | `blockchain.relayfee` | Minimum relay fee in BTC/kB |
+//! | `mempool.get_fee_histogram` | Fee histogram of tracked mempool transactions |
 //!
 //! [spec]: https://electrumx.readthedocs.io/en/latest/protocol-methods.html
 
@@ -88,7 +90,7 @@ impl PendingChangeBroadcaster {
 ///
 /// This is the bridge between the Nakamoto `FilterClient` event stream and the
 /// Electrum subscription machinery.
-pub(crate) fn apply_tx_status_change(
+pub fn apply_tx_status_change(
     indexer: &Indexer,
     pending_changes: &PendingChangeBroadcaster,
     txid: &str,
@@ -557,6 +559,8 @@ fn dispatch_request<S: BlockSource>(
         "blockchain.estimatefee" => handle_estimatefee(&params, fee_rate),
         "blockchain.block.header" => handle_block_header(&params, source),
         "blockchain.block.headers" => handle_block_headers(&params, source),
+        "blockchain.relayfee" => handle_relayfee(),
+        "mempool.get_fee_histogram" => handle_fee_histogram(indexer),
         unknown => {
             warn!("unknown method: {unknown}");
             Err(format!("unknown method '{unknown}'"))
@@ -832,6 +836,33 @@ fn handle_block_headers<S: BlockSource>(
 // ---------------------------------------------------------------------------
 // Parameter helpers
 // ---------------------------------------------------------------------------
+
+/// Handle `blockchain.relayfee` — return the minimum relay fee in BTC/kB.
+///
+/// Returns the standard Bitcoin Core minimum relay fee of 1 000 sat/kB
+/// expressed as a decimal BTC/kB value.  This is a static value because
+/// nakamoto-electrs does not have access to a live node's relay-fee policy.
+fn handle_relayfee() -> std::result::Result<Value, String> {
+    // 1 000 sat/kB = 0.00001 BTC/kB (standard Bitcoin Core default).
+    Ok(json!(0.00001f64))
+}
+
+/// Handle `mempool.get_fee_histogram` — return a fee-rate histogram of the
+/// locally tracked pending transactions.
+///
+/// Returns `[[fee_rate_sat_per_vb, vsize_vbytes], ...]` sorted by decreasing
+/// fee rate.  Only transactions whose fee can be estimated from known prevout
+/// values are included; transactions with unknown prevouts are omitted.
+fn handle_fee_histogram(indexer: &Indexer) -> std::result::Result<Value, String> {
+    let histogram = indexer
+        .get_fee_histogram()
+        .map_err(|e| format!("fee histogram failed: {e:#}"))?;
+    let rows: Vec<Value> = histogram
+        .iter()
+        .map(|[rate, vsize]| json!([rate, vsize]))
+        .collect();
+    Ok(Value::Array(rows))
+}
 
 /// Parse a 64-character hex script hash from the first element of `params`.
 fn parse_scripthash(params: &Value) -> std::result::Result<ScriptHash, String> {

@@ -855,6 +855,64 @@ impl IndexState {
         self.pending_mempool_for_script(sh)
     }
 
+    /// Build a fee-rate histogram from all pending transactions.
+    ///
+    /// Returns `[[fee_rate_sat_per_vb, vsize_vbytes], ...]` sorted by
+    /// decreasing fee rate.  Only transactions whose fee can be estimated
+    /// (all prevout values known) are included.
+    fn fee_histogram(&self) -> Result<Vec<[u64; 2]>> {
+        use std::collections::{BTreeMap, HashSet};
+
+        // fee_rate (sat/vB, integer) → cumulative vsize for that bucket.
+        let mut buckets: BTreeMap<u64, u64> = BTreeMap::new();
+
+        for tx in self.pending_txs.values() {
+            let mut input_value = 0u64;
+            let mut fee_known = true;
+            let mut seen_spends = HashSet::new();
+            for input in &tx.input {
+                let prevout = input.previous_output;
+                if prevout.is_null() || !seen_spends.insert(prevout) {
+                    continue;
+                }
+                if let Some(output) = self.store.load_output(&prevout)? {
+                    input_value = input_value.saturating_add(output.value);
+                } else if let Some(output) = self.pending_output_for_outpoint(&prevout) {
+                    input_value = input_value.saturating_add(output.value);
+                } else {
+                    fee_known = false;
+                    break;
+                }
+            }
+            if !fee_known {
+                continue;
+            }
+            let output_value = tx
+                .output
+                .iter()
+                .fold(0u64, |acc, o| acc.saturating_add(o.value.to_sat()));
+            let fee_sats = input_value.saturating_sub(output_value);
+            if fee_sats == 0 {
+                continue;
+            }
+            // vsize = ceil(weight / 4)
+            let vsize = (tx.weight().to_wu() + 3) / 4;
+            let fee_rate = fee_sats / vsize.max(1); // sat/vB, floor
+            if fee_rate == 0 {
+                continue;
+            }
+            *buckets.entry(fee_rate).or_insert(0) += vsize;
+        }
+
+        // Sort by decreasing fee rate.
+        let mut histogram: Vec<[u64; 2]> = buckets
+            .into_iter()
+            .map(|(rate, vsize)| [rate, vsize])
+            .collect();
+        histogram.sort_by(|a, b| b[0].cmp(&a[0]));
+        Ok(histogram)
+    }
+
     /// Return unspent outputs from `pending_txs` that pay to `sh`.
     fn pending_unspent_for_script(&self, sh: &ScriptHash) -> Vec<StoredUnspent> {
         self.pending_outputs
@@ -1152,6 +1210,23 @@ impl Indexer {
             .read()
             .expect("index read lock poisoned")
             .mempool(sh)
+    }
+
+    /// Return a fee-rate histogram of tracked pending transactions.
+    ///
+    /// Each element is `[fee_rate_sat_per_vb, vsize_vbytes]` representing a
+    /// group of transactions at the same rounded fee rate.  The list is sorted
+    /// by **decreasing** fee rate, as required by the Electrum
+    /// `mempool.get_fee_histogram` RPC.
+    ///
+    /// Only transactions whose fee can be estimated (i.e. all prevout values
+    /// are known) are included.  Transactions with unknown prevouts produce a
+    /// fee of 0 and are omitted from the histogram.
+    pub fn get_fee_histogram(&self) -> Result<Vec<[u64; 2]>> {
+        self.state
+            .read()
+            .expect("index read lock poisoned")
+            .fee_histogram()
     }
 }
 
