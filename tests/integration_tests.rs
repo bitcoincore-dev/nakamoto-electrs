@@ -1583,7 +1583,8 @@ fn electrum_scripthash_get_mempool_updates_when_parent_confirms() {
         vec![(900, child_script.clone())],
     );
 
-    let mut parent_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
+    let mut parent_stream =
+        TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     parent_stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -1599,7 +1600,10 @@ fn electrum_scripthash_get_mempool_updates_when_parent_confirms() {
     let mut line = String::new();
     parent_reader.read_line(&mut line).unwrap();
     let parent_resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(parent_resp["result"], serde_json::json!(parent_txid.to_string()));
+    assert_eq!(
+        parent_resp["result"],
+        serde_json::json!(parent_txid.to_string())
+    );
 
     let mut child_stream = TcpStream::connect_timeout(&local_addr, Duration::from_secs(5)).unwrap();
     child_stream
@@ -1670,7 +1674,10 @@ fn electrum_scripthash_get_mempool_updates_when_parent_confirms() {
             Ok(0) => continue,
             Ok(_) => break,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for notification");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for notification"
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => panic!("failed to read subscribe notification: {err}"),
@@ -1699,7 +1706,10 @@ fn electrum_scripthash_get_mempool_updates_when_parent_confirms() {
         serde_json::from_str(line.trim()).unwrap()
     };
     assert_eq!(mempool_after["result"][0]["height"], serde_json::json!(0));
-    assert_eq!(mempool_before["result"][0]["tx_hash"], mempool_after["result"][0]["tx_hash"]);
+    assert_eq!(
+        mempool_before["result"][0]["tx_hash"],
+        mempool_after["result"][0]["tx_hash"]
+    );
 
     shutdown.store(true, Ordering::SeqCst);
 }
