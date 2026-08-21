@@ -79,12 +79,29 @@ pub(crate) fn apply_tx_status_change(
     status: &str,
 ) -> Result<()> {
     let txid: bitcoin::Txid = txid.parse().context("invalid txid in tx status event")?;
-    let affected = if status.contains("reverted") {
-        indexer.restore_pending_transaction(&txid)?
-    } else if status.contains("included in block") || status.contains("replaced by") {
-        indexer.forget_pending_transaction(&txid)?
-    } else {
-        None
+    apply_tx_status_kind(indexer, pending_changes, &txid, classify_tx_status(status))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxStatusKind {
+    Reverted,
+    Confirmed,
+    Stale,
+    Acknowledged,
+    Other,
+}
+
+fn apply_tx_status_kind(
+    indexer: &Indexer,
+    pending_changes: &PendingChangeBroadcaster,
+    txid: &bitcoin::Txid,
+    kind: TxStatusKind,
+) -> Result<()> {
+    let affected = match kind {
+        TxStatusKind::Reverted => indexer.restore_pending_transaction(txid)?,
+        TxStatusKind::Confirmed => indexer.forget_pending_transaction(txid)?,
+        TxStatusKind::Stale => indexer.forget_pending_transaction_chain(txid)?,
+        TxStatusKind::Acknowledged | TxStatusKind::Other => None,
     };
 
     if let Some(affected) = affected {
@@ -92,6 +109,20 @@ pub(crate) fn apply_tx_status_change(
     }
 
     Ok(())
+}
+
+fn classify_tx_status(status: &str) -> TxStatusKind {
+    if status == "transaction has been reverted" {
+        TxStatusKind::Reverted
+    } else if status.starts_with("transaction was included in block ") {
+        TxStatusKind::Confirmed
+    } else if status.starts_with("transaction was replaced by ") {
+        TxStatusKind::Stale
+    } else if status.starts_with("transaction was acknowledged by peer ") {
+        TxStatusKind::Acknowledged
+    } else {
+        TxStatusKind::Other
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1377,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn tx_status_ignored_for_unconfirmed_and_acknowledged() {
+    fn tx_status_unconfirmed_is_ignored_and_acknowledged_by_peer_is_noop() {
         let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
             .expect("indexer");
         let broadcaster = PendingChangeBroadcaster::default();
@@ -1409,13 +1440,16 @@ mod tests {
             "transaction is unconfirmed",
         )
         .expect("ignore");
+        assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
+        assert!(rx.try_recv().is_err());
+
         apply_tx_status_change(
             &indexer,
             &broadcaster,
             &txid.to_string(),
             "transaction was acknowledged by peer 127.0.0.1:8333",
         )
-        .expect("ignore");
+        .expect("noop");
 
         assert_eq!(indexer.get_unconfirmed_balance_delta(&sh).unwrap(), 900);
         assert!(rx.try_recv().is_err());
@@ -1528,6 +1562,134 @@ mod tests {
             vec![ScriptHash::from_script(&bitcoin::ScriptBuf::from_bytes(
                 vec![0x51]
             ))]
+        );
+    }
+
+    #[test]
+    fn tx_status_for_parent_notifies_descendant_scripts() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+
+        let parent_script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let child_script = bitcoin::ScriptBuf::from_bytes(vec![0x52]);
+        let parent = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: parent_script.clone(),
+            }],
+        };
+        let parent_txid = parent.compute_txid();
+        let child = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::new(parent_txid, 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: child_script.clone(),
+            }],
+        };
+        indexer
+            .track_pending_transaction(&parent)
+            .expect("track parent");
+        indexer
+            .track_pending_transaction(&child)
+            .expect("track child");
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &parent_txid.to_string(),
+            "transaction was included in block 0000000000000000000000000000000000000000000000000000000000000000 at height 1",
+        )
+        .expect("forget parent");
+
+        let affected = rx.recv().expect("pending notification");
+        assert!(affected.contains(&ScriptHash::from_script(&parent_script)));
+        assert!(affected.contains(&ScriptHash::from_script(&child_script)));
+    }
+
+    #[test]
+    fn tx_status_replaced_by_clears_descendant_pending_transactions() {
+        let indexer = Indexer::new(tempfile::tempdir().expect("temp").keep(), Metrics::new())
+            .expect("indexer");
+        let broadcaster = PendingChangeBroadcaster::default();
+        let rx = broadcaster.subscribe();
+
+        let parent_script = bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+        let child_script = bitcoin::ScriptBuf::from_bytes(vec![0x52]);
+        let parent = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(1000),
+                script_pubkey: parent_script.clone(),
+            }],
+        };
+        let parent_txid = parent.compute_txid();
+        let child = Transaction {
+            version: bitcoin::transaction::Version::non_standard(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::blockdata::transaction::TxIn {
+                previous_output: bitcoin::OutPoint::new(parent_txid, 0),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::blockdata::transaction::TxOut {
+                value: bitcoin::Amount::from_sat(900),
+                script_pubkey: child_script.clone(),
+            }],
+        };
+        indexer
+            .track_pending_transaction(&parent)
+            .expect("track parent");
+        indexer
+            .track_pending_transaction(&child)
+            .expect("track child");
+
+        apply_tx_status_change(
+            &indexer,
+            &broadcaster,
+            &parent_txid.to_string(),
+            "transaction was replaced by 0000000000000000000000000000000000000000000000000000000000000001 in block 0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("forget chain");
+
+        let affected = rx.recv().expect("pending notification");
+        assert!(affected.contains(&ScriptHash::from_script(&parent_script)));
+        assert!(affected.contains(&ScriptHash::from_script(&child_script)));
+        assert!(
+            indexer
+                .get_mempool(&ScriptHash::from_script(&parent_script))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            indexer
+                .get_mempool(&ScriptHash::from_script(&child_script))
+                .unwrap()
+                .is_empty()
         );
     }
 
