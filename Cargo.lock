@@ -358,9 +358,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.4.2"
+version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d262e149917187838d5b42777c8253bcb64500067342904e7d429499a6f277e"
+checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -592,9 +592,9 @@ dependencies = [
 
 [[package]]
 name = "either"
-version = "1.17.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
+checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
 name = "electrs"
@@ -693,9 +693,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
+checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
 name = "fmt2io"
@@ -926,9 +926,9 @@ dependencies = [
 
 [[package]]
 name = "libredox"
-version = "0.1.19"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2026a5056764a10b2bf5d56488cba40da507f5493a6a429340e2004d9ed085fa"
+checksum = "28d0a00925a9f930d679b6789b721e3a7f9ed110f41b86d2497caa780c3a070a"
 dependencies = [
  "libc",
 ]
@@ -1021,8 +1021,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-chain"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a05a7d02bfb90e13f39a8e7cf414ff32d0b7ecc66143937433ac8e5d6352fe6"
+source = "git+https://github.com/bitcoincore-dev/nakamoto?rev=5ffebc60bf35585c096943ea9d4c4cfc9e454a20#5ffebc60bf35585c096943ea9d4c4cfc9e454a20"
 dependencies = [
  "log",
  "nakamoto-common",
@@ -1032,8 +1031,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-client"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2df3e1470f5c8bef37a47e23bb8c0d2858a7bd5eb3e4177474b09b30912ba7c"
+source = "git+https://github.com/bitcoincore-dev/nakamoto?rev=5ffebc60bf35585c096943ea9d4c4cfc9e454a20#5ffebc60bf35585c096943ea9d4c4cfc9e454a20"
 dependencies = [
  "crossbeam-channel",
  "fastrand 1.9.0",
@@ -1049,8 +1047,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-common"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ce6260eda171e60381e40c24a59b5f103d0ca0225c7071972b7c2da52958ca0"
+source = "git+https://github.com/bitcoincore-dev/nakamoto?rev=5ffebc60bf35585c096943ea9d4c4cfc9e454a20#5ffebc60bf35585c096943ea9d4c4cfc9e454a20"
 dependencies = [
  "bitcoin 0.29.2",
  "bitcoin_hashes 0.11.0",
@@ -1090,8 +1087,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-net"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c84e6269b64d8a643464498c220bbc72f79e58b4b58628b0e11cbbbd8ed71e7"
+source = "git+https://github.com/bitcoincore-dev/nakamoto?rev=5ffebc60bf35585c096943ea9d4c4cfc9e454a20#5ffebc60bf35585c096943ea9d4c4cfc9e454a20"
 dependencies = [
  "crossbeam-channel",
  "fastrand 1.9.0",
@@ -1102,8 +1098,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-net-poll"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9395d7eff8212c961bb3d5aab80d34cae3b77ddc85af8c71b4ae26ff2e4c0d1"
+source = "git+https://github.com/bitcoincore-dev/nakamoto?rev=5ffebc60bf35585c096943ea9d4c4cfc9e454a20#5ffebc60bf35585c096943ea9d4c4cfc9e454a20"
 dependencies = [
  "crossbeam-channel",
  "libc",
@@ -1116,8 +1111,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-node"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65443668d9e025fe8681423fa9ee2f8ef2e4f3aaccd957c068bbc3326c9e05ec"
+source = "git+https://github.com/bitcoincore-dev/nakamoto?rev=5ffebc60bf35585c096943ea9d4c4cfc9e454a20#5ffebc60bf35585c096943ea9d4c4cfc9e454a20"
 dependencies = [
  "argh",
  "atty",
@@ -1132,8 +1126,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-p2p"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c22f70ce4e64ecf43649d3b53879d3ca634cf8bb12a42caed407138c705a9e72"
+source = "git+https://github.com/bitcoincore-dev/nakamoto?rev=5ffebc60bf35585c096943ea9d4c4cfc9e454a20#5ffebc60bf35585c096943ea9d4c4cfc9e454a20"
 dependencies = [
  "crossbeam-channel",
  "fastrand 1.9.0",

@@ -453,6 +453,7 @@ mod tests {
             (
                 nakamoto_common::block::Height,
                 nakamoto_common::block::BlockHeader,
+                nakamoto_common::bitcoin::util::uint::Uint256,
             ),
             nakamoto_client::handle::Error,
         > {
@@ -461,10 +462,28 @@ mod tests {
         fn get_block(
             &self,
             _hash: &nakamoto_common::block::BlockHash,
+        ) -> Result<
+            Option<(
+                nakamoto_common::block::Height,
+                nakamoto_common::block::BlockHeader,
+            )>,
+            nakamoto_client::handle::Error,
+        > {
+            unreachable!()
+        }
+        fn get_block_by_height(
+            &self,
+            _height: nakamoto_common::block::Height,
+        ) -> Result<Option<nakamoto_common::block::BlockHeader>, nakamoto_client::handle::Error> {
+            unreachable!()
+        }
+        fn request_block(
+            &self,
+            _hash: &nakamoto_common::block::BlockHash,
         ) -> Result<(), nakamoto_client::handle::Error> {
             unreachable!()
         }
-        fn get_filters(
+        fn request_filters(
             &self,
             _range: std::ops::RangeInclusive<nakamoto_common::block::Height>,
         ) -> Result<(), nakamoto_client::handle::Error> {
